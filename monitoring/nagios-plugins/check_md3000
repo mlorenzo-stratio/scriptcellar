@@ -174,9 +174,9 @@ EOM
 
 function usage(){
   cat << EOU
-Usage: "$0" -t lun -m speed -s <controller_1_address> [-s controller_2_address] [-n disk_name|lun_name]
-       "$0" -t lun -m latency -s <controller_1_address> [-s controller_2_address] [-n disk_name|lun_name] [-w warn_threshold -c crit_threshold]
-       "$0" -t disk -s <controller_1_address> [-s controller_2_address] [-w warn_threshold -c crit_threshold]
+Usage: $0 -t lun -m speed -s <controller_1_address> [-s controller_2_address] [-n disk_name|lun_name]
+       $0 -t lun -m latency -s <controller_1_address> [-s controller_2_address] [-n disk_name|lun_name] [-w warn_threshold -c crit_threshold]
+       $0 -t disk -s <controller_1_address> [-s controller_2_address] [-w warn_threshold -c crit_threshold]
 EOU
 }
 
@@ -279,9 +279,6 @@ function getLunStats(){
       else
         perfdata+="${disk_name}_io_lat=${curr_io_lat}ms "
       fi
-    else
-      usage
-      exit 1
     fi
     #echo DEBUG: $null1 $null2 $disk
     #exit
@@ -443,7 +440,7 @@ function main(){
   # Verify all needed parameters
   if [[ -z $ctrlr ]] || \
      [[ -z $target ]] || \
-     [[ $target == "lun" ]] && [[ -z $mode ]] || \
+     [[ $target == "lun" ]] && ( [[ $mode != "speed" ]] || [[ $mode != "latency" ]] ) || \
      [[ $target == "disk" ]] && [[ -n $name ]] || \
      [[ $mode == "speed" ]] && ( [[ $warn_threshold ]] || [[ $crit_threshold ]] ) || \
      [[ $warn_threshold ]] && [[ ! $crit_threshold ]]; then
