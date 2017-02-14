@@ -15,5 +15,3 @@ gosec-sso |  | gosec/gosec-sso/krb
 kafka |  | gosec/gosec-kafka/krb
 viewer |  | viewer/$principal/krb
 crossdata |  | crossdata/$principal/krb
-# stratio |  | <vault_URL?>
-# datio |  | <vault_URL?>
