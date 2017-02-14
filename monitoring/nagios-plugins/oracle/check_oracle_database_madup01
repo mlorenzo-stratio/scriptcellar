@@ -1,0 +1,26 @@
+#!/bin/bash
+
+DATABASE=$1
+
+HOST="(madup01)"
+COUNT=$(ps -ef | grep pmon | grep $DATABASE | grep -v grep | wc -l)
+INSTANCE=$(ps -ef | grep pmon | grep $DATABASE | grep -v grep | awk '{print $8}' | awk -F_ '{print $3"_"$4}')
+
+if [ $COUNT -eq 0 ]; then
+	HOST="madup02"
+	COUNT=$(ssh $HOST "ps -ef" | grep pmon | grep $DATABASE | grep -v grep | wc -l)
+	if [ "$COUNT" -eq 0 ]; then
+	        echo "$DATABASE not running!!"
+		exit 2
+	else
+		echo "$DATABASE is running on madup02"
+		exit 2
+	fi
+        exit 2
+else
+        echo "$INSTANCE $HOST OK - $COUNT PMON process(es) running"
+        exit 0
+fi
+
+exit 1
+

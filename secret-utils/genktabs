@@ -1,0 +1,207 @@
+#!/bin/bash -e
+
+# Set debug status
+export VERBOSE="no"
+declare script_home
+script_home="$(dirname "$0")"
+export script_home
+
+### GLOBAL VARIABLES ###
+declare kerberos_server
+declare kerberos_realm
+declare admin_princ
+declare admin_ktab
+declare vault_host
+declare vault_port
+declare vault_token
+declare force_generate_keytab
+declare duplicate_principals
+declare export_keytabs
+declare keytab_folder="keytabs"
+
+
+# define passwords variable pointing to passwords folder
+declare keytabs="$script_home/keytabs"
+
+# source common functions
+source "$script_home/common/funcvars"
+
+function help(){
+    cat <<EOH
+Usage: $0 -a <admin_principal> -r <kerberos_realm> -k <admin_keytab> -s <kadmin_server> -l <list> -v <vault_host> -p <vault_port> -t <vault_token> [-f] [-e]
+    -f: force keytab overwrite on Vault
+    -e: export keytabs to folder
+EOH
+}
+
+# create principal and keytab and upload them to Vault
+function create_princ_n_ktab_n_vault_em() {
+    local principal="$1"
+    local esc_principal
+    local realm="$2"
+    local fqdn="$3"
+    local vault_url="$4"
+    local b64_keytab
+    local keytab
+
+    # If fqdn is provided then principal is meant to be issued for a service running on that fqdn
+    if [[ ${fqdn} ]]; then
+        principal="$principal/$fqdn@$realm"
+    else
+        principal="$principal@$realm"
+    fi
+    # Calculate keytab filename translating '/' => ' '
+    esc_principal="${principal//\// }"
+    duplicate_principals="$(krbquery "listprincs" "keep_output" | grep "^$principal$" || true)"
+    # If there's a duplicated $principal then warn if $force_generate_keytab is not set
+    if  [[ ! $force_generate_keytab ]] && [[ $duplicate_principals ]]; then
+        echo "[Kerberos] Principal '$principal' already exists ... skipping."
+        echo "[Kerberos] NOT regenerating keytab for already existing '$principal' (use -f to force it) ..."
+        # If $keytabs/$principal.keytab found then upload that!!
+        if [[ -e "$keytabs/$esc_principal.keytab" ]]; then
+            keytab="$keytabs/$esc_principal.keytab"
+            # Get base64 version of keytab and trim special chars
+            b64_keytab=$(base64 "$keytab" | tr -d ' \t\n\r\f')
+            # upload principal and b64'ed keytab to Vault
+            echo "[Vault] Uploading existing keytab file '$keytab' ..."
+            envault "$vault_url" "{ \\\"principal\\\":\\\"$principal\\\", \\\"keytab_base64\\\":\\\"$b64_keytab\\\" }"
+        fi
+        echo
+    # if $force_generate_keytab or not $duplicate_principals
+    else
+        # If $keytabs/$principal.keytab found then upload that!!
+        if [[ -e "$keytabs/$esc_principal.keytab" ]]; then
+            keytab="$keytabs/$esc_principal.keytab"
+            # Warn if there's a duplicated $principal
+            if [[ $duplicate_principals ]]; then
+                echo "[Kerberos] Principal '$principal' already exists ... skipping."
+            else
+                echo "[Kerberos] Creating principal '$principal' ..."
+                krbquery "addprinc -randkey $principal"
+            fi
+            # Get base64 version of keytab and trim special chars
+            b64_keytab=$(base64 "$keytab" | tr -d ' \t\n\r\f')
+            # upload principal and b64'ed keytab to Vault
+            echo "[Vault] Uploading existing keytab file '$keytab' ..."
+            envault "$vault_url" "{ \\\"principal\\\":\\\"$principal\\\", \\\"keytab_base64\\\":\\\"$b64_keytab\\\" }"
+            echo
+        else # if no $keytabs/$principal.keytab found, regenerate keytab if $principal already exists and $force_generate_keytab is set (implicit condition)
+            keytab=$(mktemp -u -p /dev/shm -t .keytab.XXXX)
+            if [[ $duplicate_principals ]]; then
+                echo "[Kerberos] Principal '$principal' already exists ... skipping."
+                echo "[Kerberos] Regenerating keytab for '$principal' ..."
+            else
+                echo "[Kerberos] Creating principal '$principal' ..."
+                krbquery "addprinc -randkey $principal"
+                echo "[Kerberos] Generating keytab for '$principal' ..."
+            fi
+            krbquery "xst -k $keytab $principal"
+            # Get base64 version of keytab and trim special chars
+            b64_keytab=$(base64 "$keytab" | tr -d ' \t\n\r\f')
+            # upload principal and b64'ed keytab to Vault
+            echo "[Vault] Uploading principal/keytab ..."
+            envault "$vault_url" "{ \\\"principal\\\":\\\"$principal\\\", \\\"keytab_base64\\\":\\\"$b64_keytab\\\" }"
+            echo
+            # if export keytab is set then save them on randomly generated folder
+            # Translate '/' for ' '
+            if [[ $export_keytabs ]]; then
+                principal=${principal//\// }
+                cp "$keytab" "$keytab_folder/$principal.keytab"
+            fi
+            # clean this mess up
+            rm -f "$keytab"
+        fi
+    fi
+}
+
+function main (){
+    while getopts "a:k:r:s:l:v:p:t:hfe" opt; do
+        case $opt in
+            a) admin_princ=$OPTARG ;;      ### GLOBAL VARIABLES ###
+            k) admin_ktab=$OPTARG ;;       ### GLOBAL VARIABLES ###
+            r) kerberos_realm=$OPTARG ;;   ### GLOBAL VARIABLES ###
+            s) kerberos_server=$OPTARG ;;  ### GLOBAL VARIABLES ###
+            l) local list=$OPTARG ;;
+            v) vault_host=$OPTARG ;;       ### GLOBAL VARIABLES ###
+            p) vault_port=$OPTARG ;;       ### GLOBAL VARIABLES ###
+            t) vault_token=$OPTARG ;;      ### GLOBAL VARIABLES ###
+            f) force_generate_keytab="yes" ;;
+            e) export_keytabs="yes" ;;
+            h|*) help ; exit 1; ;;
+        esac
+    done
+
+    # Check for correct arguments
+    check_arg "$vault_host" "Vault host"
+    check_arg "$vault_token" "Vault token"
+    check_arg "$admin_princ" "Kerberos principal"
+    check_arg "$kerberos_server" "Kerberos server"
+    check_arg "$kerberos_realm" "Kerberos realm"
+
+    # Exit if admin_principal contains the realm, we'll append it
+    if [[ $admin_princ =~ @ ]]; then
+        echo "ERROR! <admin_principal> must NOT contain the realm. It must be specified using the '-r' option"
+        exit 1
+    else
+        admin_princ+="@$kerberos_realm"
+    fi
+
+    # verify files & folders availability
+    verify "f:$list" "f:$admin_ktab"
+
+    # Check for kadmin command and fail if not found
+    if ! which kadmin > /dev/null; then
+        echo "Script '$0' needs kadmin command to run."
+        echo "RHEL/CentOS package: krb5-workstation"
+        echo "Debian/Ubuntu package: krb5-user"
+        echo
+        echo "Also check that you have correctly configured your Kerberos client file /etc/krb5.conf like this one:"
+        echo
+        cat << EOC
+[libdefaults]
+dns_lookup_realm = false
+ticket_lifetime = 24h
+renew_lifetime = 7d
+forwardable = false
+rdns = false
+default_realm = DEMO.STRATIO.COM
+#default_ccache_name = KEYRING:persistent:%{uid}
+
+[realms]
+DEMO.STRATIO.COM = {
+  kdc = gosec01.dev.stratio.com
+  admin_server = gosec01.dev.stratio.com
+  default_domain = demo.stratio.com
+}
+
+[domain_realm]
+.demo.stratio.com = DEMO.STRATIO.COM
+demo.stratio.com = DEMO.STRATIO.COM
+
+EOC
+        exit 1
+    fi
+
+    # Define Vault default port if not specified
+    vault_port=${vault_port:-"8200"}
+
+    # If specified, export generated keytabs to autogenerated folder $script_home/keytabs.XXX
+    if [[ $export_keytabs ]]; then
+        keytab_folder=$(mktemp -p "$script_home" -d -t $keytab_folder.XXX)
+    fi
+
+    # read $list and process its contents
+    while IFS=$'| ' read principal fqdn vault_url; do
+        # Skip blank lines and commented lines
+        if [[ ! $principal ]] || [[ $principal =~ ^[[:space:]]*# ]] ; then continue ; fi
+        # create principal and keytab and upload them to Vault
+        vault_url=$(eval echo "$vault_url")
+        create_princ_n_ktab_n_vault_em "$principal" "$kerberos_realm" "$fqdn" "$vault_url"
+    done < "$list"
+    if [[ $export_keytabs ]]; then
+        echo -e "\nAll keytabs exported to '$keytab_folder'. Rename to 'keytabs' to upload these same keytabs rather than generating them again."
+    fi
+}
+
+# Run it
+main "$@"

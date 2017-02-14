@@ -1,0 +1,7 @@
+#!/bin/bash
+
+PROCESS=$(ps faxuww | grep -E "^nagios.*netapp_stats_retriever$" | grep -v grep)
+
+if [ -z "$PROCESS" ]; then
+	/usr/local/nagios/libexec/netapp_stats_retriever &
+fi

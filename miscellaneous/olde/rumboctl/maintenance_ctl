@@ -1,0 +1,102 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME <enable|disable|status> <app1...appN>
+	Provides maintentance page management
+EOH
+}
+
+maintenance_ctl(){
+        local action=$1
+	shift
+	if [ "$1" = "<none>" ]; then
+		local _apps=""
+	else
+		local _apps=$*
+	fi
+        local output
+        local apps
+        local count=0
+        if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+        action=${action,,}
+        # Check if $_apps has maintenance page
+	for app in $_apps; do
+		lock $app
+	        if ! hasMaintenance $app; then
+			if [ "$action" != "status" ]; then
+				log "WARNING! Application '$app' doesn't have maintenance page!"
+			fi
+			local TOTAL=1
+		        local count=1
+			print_percent
+			print_comment
+	                echo "WARNING! Application '$app' doesn't have maintenance page!!" | tee -a $TMP
+	                echo >> $TMP
+			print_comment
+			continue
+		else
+			local apps="$apps $app"
+	        fi
+	done
+	apps=$(echo $apps | sed -e "s/^ //")
+        case $action in
+                enable|disable)
+			local _tmp=( $apps )
+                        local TOTAL=${#apps[@]}
+			print_percent
+        		local count=0
+			for app in $_apps; do
+				log -n "$action maintenance: "
+                        	output=$($DEBUG ssh $CONNECTION_MGMT_SERVER $MAINT_CTL $action $app | tr -t '\n' '#')
+				if [ $? != 0 ]; then
+					log -a "ERROR!!"
+					log "output: $output"
+				else
+					log -a "OK"
+				fi
+	                       	let count=count+1
+				print_comment
+	                        echo -e $output | tr -t '#' '\n' | tee -a $TMP
+				print_comment
+				print_percent
+			done
+                ;;
+                status)
+                        local TOTAL=1
+			print_percent
+                        output=$($DEBUG ssh $CONNECTION_MGMT_SERVER $MAINT_CTL $action | tr -t '\n' '#')
+                        let count=count+1
+			print_comment
+                        echo -e $output | tr -t '#' '\n' | tee -a $TMP
+			print_comment
+			print_percent
+                ;;
+        esac
+	for app in $_apps; do
+		unlock $app
+	done
+}
+
+
+action=${1,,}
+shift
+apps=$*
+
+retrieve_configuration
+case "$action" in
+        enable|disable)
+		check_arg 1 "" $* || exit $?
+		apps=$(validate_apps $apps)
+	;;
+	status) apps="<none>" ;;
+        *)              usage ;;
+esac
+
+DISABLE_HEADER="yes" maintenance_ctl $action $apps

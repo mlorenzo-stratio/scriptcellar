@@ -1,0 +1,34 @@
+#!/bin/bash
+
+DB=$1
+TABLESPACE=$2
+PASS=""
+PROFILE=""
+BLOCKSIZE=""
+
+if [ "$USER" != "oracle" ]; then
+	echo "Error!! only execute as oracle!"
+	exit 1
+fi
+
+if [ -z "$TABLESPACE" ]; then
+	echo "No args specified."
+	exit 1
+fi
+
+if [ $DB = "front" ]; then
+        PROFILE="/home/oracle/.bash_FRONTprofile"
+	BLOCKSIZE="8192"
+	PASS="prdrmbw/mc3t1pdy35PM@FRONTPRD"
+elif [ $DB = "back" ]; then
+        PROFILE="/home/oracle/.bash_profile"
+	BLOCKSIZE="4096"
+	PASS="system/v3ranit0by3@PRDRBOPRD"
+else
+        PROFILE="/home/oracle/.bash_profileBMS"
+	BLOCKSIZE="8192"
+	PASS="system/v3ranit0by3@BMSPRD"
+fi
+
+. $PROFILE 2>/dev/null
+$ORACLE_HOME/bin/sqlplus -s $PASS @/usr/local/nagios/libexec/check_tablespace.sql $BLOCKSIZE $TABLESPACE

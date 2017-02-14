@@ -1,0 +1,20 @@
+#!/bin/bash
+
+HOSTS="$(curl -s -XGET http://cerberus.rumbo.com/vm_catalog | grep "PRD WEB services #" | cut -d';' -f1 | tr -t '\n' ' ')"
+TMP=$(mktemp -p /dev/shm)
+size=0
+hits=0
+SENDNSCA="/usr/sbin/send_nsca"
+
+for host in $HOSTS; do
+	/usr/local/nagios/libexec/check_nrpe -H $host -c check_http_traffic -t 60 > $TMP
+	$SENDNSCA -H madup0715.rumbo.prd -c /etc/nagios/send_nsca.cfg <<END > /dev/null 2>&1
+$host	HTTP traffic	0	$(cat $TMP)
+END
+	let size=size+$(cat $TMP | cut -d '|' -f2 | sed -e "s/^.*size=\([0-9]*\)B.*$/\1/")
+	let hits=hits+$(cat $TMP | cut -d '|' -f2 | sed -e "s/^.*hits=\([0-9]*\).*$/\1/")
+done
+
+_size="$(echo "$size/1024/1024" | bc)MB/s"
+echo "$hits hits on the last 5 minutes @ $_size | hits=$hits size=$size"B
+rm -f $TMP

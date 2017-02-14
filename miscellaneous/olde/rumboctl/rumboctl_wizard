@@ -1,0 +1,958 @@
+#!/bin/bash
+
+# Enable dialogs
+export isDialog="yes"
+
+SCRIPTNAME=$(basename $0 | cut -d '_' -f1)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+PARENT_COMMAND=$(ps $PPID | tail -n 1 | awk "{print \$5}")
+PARENT_SCRIPT=$(ps $PPID | tail -n 1 | awk "{print \$6}")
+if [ "$PARENT_COMMAND" = "-bash" -a "$PARENT_SCRIPT" != " " ]; then
+        echo "Cannot call \`$(basename $0)\` directly!!"
+        echo "Use $SCRIPTNAME instead"
+	cleanTemps
+        exit $WRONG_SCRIPT_EXECUTION
+fi
+
+# Initialize runtime variables
+REPORT=$(mktemp -p /dev/shm/rumboctl)
+selection=""
+
+nextOrBack(){
+	if [ $? != 0 ]; then continue ; fi
+	if [ -e $TMP_STATUS ]; then
+		local _status=$(cat $TMP_STATUS)
+		rm -f $TMP_STATUS
+		if [ "$_status" != 0 ]; then
+			continue
+		fi
+	fi
+}
+
+report(){
+	local start_time="$1"
+	shift
+	local end_time="$1"
+	shift
+	local message=$*
+	cat $TMP >> $REPORT
+	mail=$(report_menu)
+	{
+		echo "Operating on '$ENV' environment:"
+		echo -e "START: $start_time\n"
+		cat $REPORT
+		echo -e "\nEND: $end_time"
+	} | mail -s "[$ENV] $SCRIPTNAME: $message" $mail
+}
+
+# Initialize JBoss, Terracotta and Infinispan data
+retrieve_configuration | initialize
+export CONFIG_LOADED="yes"
+export ENABLED_LOG="yes"
+
+# Display main menu
+while [ "$selection" != "Exit" ]; do
+	selection="$(main_menu)"
+	rm -f $TMP $TMP_STATUS $TMP_STATUS2 $REPORT
+	case $selection in
+		"Copy war")
+			app=$(app_menu "Copy application's WAR file to specified server(s)\n\nSelect application") ; nextOrBack
+			servers=$(server_menu $app 'application' "Select destination server(s)") ; nextOrBack
+			#log "START Copy WAR: $app on $servers"
+			$MYDIR/copy_war $app $servers | progress_dialog "Copy $app WAR..."
+			#log "END Copy WAR: $app on $servers"
+		;;
+		"Deploy war")
+			app=$(app_menu "Deploy application's WAR file to specified server(s)\n\nSelect application") ; nextOrBack
+			servers=$(server_menu $app 'application' "Select destination server(s)") ; nextOrBack
+			#log "START Copy WAR: $app on $servers"
+			$MYDIR/deploy_war $app $servers | progress_dialog "Deploy $app WAR..."
+			#log "END Copy WAR: $app on $servers"
+		;;
+		"Graceful deploy")
+			app=$(app_menu "Graceful deploy\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			lock "process_$app"
+			export TMP=$TMP$app
+			export TMP_STATUS=$TMP_STATUS$app
+			export TMP_STATUS2=$TMP_STATUS2$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				start_time=$(date)
+				log '#main#' "START Graceful Deploy: $app@$node"
+				{
+					export keep_output="yes"
+					$MYDIR/balancer_ctl out $node
+					if isBalancerConfigured $app; then
+						wait_dialog 30 20 \
+							"Waiting 10 minutes for JBoss to finish serving requests..."
+						#wait_dialog 1 3 \
+						#	"Waiting 3 seconds for JBoss to finish serving requests..."
+					fi
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+					BATCH="yes" $MYDIR/deploy_war $app $node
+		                        if [ $? = 0 ]; then
+						$MYDIR/jboss_ctl enable $app "$node"
+						$MYDIR/balancer_ctl in $node
+						$MYDIR/jboss_ctl start $app "$node"
+						# Rollback if $app couldn't start
+						if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+							$MYDIR/jboss_ctl stop $app "$node"
+						fi
+			                        # TODO: Delete Centreon downtime for $app@$node
+			                        #if [ ! $STG ]; then delete_downtime "$node" ; fi
+					fi
+				} | progress_dialog "JBoss graceful deploy: $node"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful deploy $app@$node report"
+				log '#main#' "END Graceful Deploy: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				start_time=$(date)
+				server="$select_mode"
+				nodes=$(getNodes $app 'application' $server)
+				log '#main#' "START Graceful Deploy: $app@$server"
+				export keep_output="yes"
+				for node in $nodes; do
+					$MYDIR/balancer_ctl out $node
+					if isBalancerConfigured $app; then
+						wait_dialog 30 20 \
+							"Waiting 10 minutes for JBoss to finish serving requests..."
+						#wait_dialog 1 3 \
+						#	"Waiting 3 seconds for JBoss to finish serving requests..."
+					fi
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+					BATCH="yes" $MYDIR/deploy_war $app $node
+		                        if [ $? != 0 ]; then
+		                                log '#main#' "END Graceful Deploy: $app@$node"
+		                                break
+		                        fi
+					$MYDIR/jboss_ctl enable $app "$node"
+					$MYDIR/balancer_ctl in $node
+					$MYDIR/jboss_ctl start $app "$node"
+					if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+						$MYDIR/jboss_ctl stop $app "$node"
+						break
+					fi
+		                        # TODO: Delete Centreon downtime for $app@$server
+		                        #if [ ! $STG ]; then delete_downtime "$server" ; fi
+				done | progress_dialog "JBoss graceful deploy: $app@$server"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful deploy $app on $server report"
+				log '#main#' "END Graceful Deploy: $app@$server"
+			# If every node from app is selected
+			else
+				log '#main#' "START Graceful Deploy: $app on every server"
+				export keep_output="yes"
+				start_time=$(date)
+				for server in $servers; do
+					nodes=$(getNodes $app 'application' $server)
+					for node in $nodes; do
+						$MYDIR/balancer_ctl out $node
+						if isBalancerConfigured $app; then
+							wait_dialog 30 20 \
+								"Waiting 10 minutes for JBoss to finish serving requests..."
+							#wait_dialog 1 3 \
+							#	"Waiting 3 seconds for JBoss to finish serving requests..."
+						fi
+						$MYDIR/jboss_ctl disable $app "$node"
+						if [ ! $STG ]; then downtime "$node" ; fi
+						$MYDIR/jboss_ctl stop $app "$node"
+						BATCH="yes" $MYDIR/deploy_war $app $node
+		                        	if [ $? != 0 ]; then
+			                                log '#main#' "END Graceful Deploy: $app@$node"
+			                                break 2
+			                        fi
+						$MYDIR/jboss_ctl enable $app "$node"
+						$MYDIR/balancer_ctl in $node
+						$MYDIR/jboss_ctl start $app "$node"
+						if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+							$MYDIR/jboss_ctl stop $app "$node"
+							break 2
+						fi
+		                        	# TODO: Delete Centreon downtime for $app
+			                        #if [ ! $STG ]; then delete_downtime "$server" ; fi
+					done
+				done | progress_dialog "JBoss graceful deploy: $app"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful deploy $app on every server report"
+				log "END Graceful Deploy: $app on every server"
+			fi
+			unlock "process_$app"
+		;; 
+		"Full deploy")
+			app=$(app_menu "Full deploy\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			export keep_output="yes"
+			start_time=$(date)
+			lock "process_$app"
+			export TMP=$TMP$app
+			export TMP_STATUS=$TMP_STATUS$app
+			export TMP_STATUS2=$TMP_STATUS2$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				log '#main#' "START Full Deploy: $app@$node"
+				{
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+				} | progress_dialog "Stop JBoss..."
+				{
+					BATCH="yes" $MYDIR/deploy_war $app $node
+					echo "_status=$?" > $TMP_STATUS2
+				} | progress_dialog "Deploy WAR..." ; nextOrBack
+				cat $TMP >> $REPORT
+				. $TMP_STATUS2
+				if [ $_status = 0 ]; then
+					# Pause for manual operations
+					print_dialog "Perform manual operations" \
+						     "Proceed to perform manual operations now.\n
+	                                              Press Enter to continue"
+					{
+						cat $TMP >> $REPORT
+						unset keep_output
+						$MYDIR/jboss_ctl enable $app "$node"
+						export keep_output="yes"
+						$MYDIR/jboss_ctl start $app "$node"
+					} | progress_dialog "JBoss start summary"
+					cat $TMP >> $REPORT
+					unset keep_output
+			                # TODO: Delete Centreon downtime for $app@$node
+				        #if [ ! $STG ]; then delete_downtime "$node" ; fi
+					$MYDIR/jboss_ctl status $app "$node" | \
+						progress_dialog "JBoss node $node status"
+				fi
+				end_time=$(date)
+				report "$start_time" "$end_time" "full deploy $app@$node report"
+				log '#main#' "END Full Deploy: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				server="$select_mode"
+				nodes=$(getNodes $app 'application' $server)
+				log '#main#' "START Full Deploy: $app@$server"
+				{
+					for node in $nodes; do
+						if [ ! $STG ]; then downtime "$node" ; fi
+					done
+					$MYDIR/jboss_ctl disable $app "$server"
+					$MYDIR/jboss_ctl stop $app "$server"
+					BATCH="yes" $MYDIR/deploy_war $app $server ; nextOrBack
+                                        echo "_status=$?" > $TMP_STATUS2
+				} | progress_dialog "Stop JBoss & deploy $app WAR"
+				cat $TMP >> $REPORT
+                                . $TMP_STATUS2
+				if [ $_status = 0 ]; then
+					# Pause for manual operations
+					print_dialog "Perform manual operations" \
+						     "Proceed to perform manual operations now.
+	                                              Press Enter to continue"
+					{
+						cat $TMP >> $REPORT
+						unset keep_output
+						$MYDIR/jboss_ctl enable $app "$server"
+						export keep_output="yes"
+						$MYDIR/jboss_ctl start $app "$server"
+					} | progress_dialog "JBoss start summary"
+					cat $TMP >> $REPORT
+					unset keep_output
+					#wait_dialog 1 3 "Waiting 3 seconds for JBoss to start" | \
+					wait_dialog 3 10 "Waiting 30 seconds for JBoss to start" | \
+						progress_dialog "nosummary" "Waiting for JBoss to start..."
+			                # TODO: Delete Centreon downtime for $app@$server
+				        #if [ ! $STG ]; then delete_downtime "$server" ; fi
+					$MYDIR/jboss_ctl status $app "$server" | \
+						progress_dialog "JBoss $app@$server status"
+				fi
+				end_time=$(date)
+				report "$start_time" "$end_time" "full deploy $app on $server report"
+				log '#main#' "END Full Deploy: $app@$server"
+			# If every node from app is selected
+			else
+				log '#main#' "START FUll Deploy: $app on every server"
+				{
+					if [ ! $STG ]; then $MYDIR/maintenance_ctl enable $app; fi
+					# Disable & remove from apache & stop JBoss
+					for server in $servers; do
+						nodes=$(getNodes $app 'application' $server)
+							for node in $nodes; do
+								if [ ! $STG ]; then downtime "$node" ; fi
+							done
+							$MYDIR/jboss_ctl disable $app "$server"
+							$MYDIR/jboss_ctl stop $app "$server"
+					done
+					# Deploy $app on every $server
+					for server in $servers; do
+						BATCH="yes" $MYDIR/deploy_war $app $server
+						_status=$?
+                                        	echo "_status=$_status" > $TMP_STATUS2
+						if [ $_status != 0 ]; then break ;fi
+					done
+				} | progress_dialog "Stop JBoss & deploy $app WAR"
+				cat $TMP >> $REPORT
+                                . $TMP_STATUS2
+				if [ $_status = 0 ]; then
+					# Pause for manual operations
+					print_dialog "Perform manual operations" \
+						     "Proceed to perform manual operations now.
+	                                              Press Enter to continue"
+					# Enable & start JBoss
+					cat $TMP >> $REPORT
+					rm -f $TMP
+					for server in $servers; do
+						$MYDIR/jboss_ctl enable $app "$server"
+						$MYDIR/jboss_ctl start $app "$server"
+					done | progress_dialog "JBoss start summary"
+					cat $TMP >> $REPORT
+					unset keep_output
+					# Wait for JBoss to be available
+					#wait_dialog 1 3 "Waiting 3 seconds for JBoss to start" | \
+					wait_dialog 3 40 "Waiting 2 minutes for JBoss to start" | \
+						progress_dialog "nosummary" "Waiting for JBoss to start..."
+					# TODO: Delete Centreon downtime for $app
+					#if [ ! $STG ]; then delete_downtime "$server" ; fi
+					# Show JBoss nodes' status
+					$MYDIR/jboss_ctl status $app | \
+						progress_dialog "JBoss $app nodes status"
+					cat $TMP >> $REPORT
+					rm -f $TMP
+					export keep_output="yes"
+					if [ ! $STG ]; then
+						$MYDIR/maintenance_ctl disable $app | \
+							progress_dialog "Mod-Jk summary"
+					fi
+				fi
+				end_time=$(date)
+				report "$start_time" "$end_time" "full deploy $app on every server report"
+				log '#main#' "END FUll Deploy: $app on every server"
+			fi
+			unlock "process_$app"
+		;;
+		"Graceful restart")
+			app=$(app_menu "Graceful restart\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			lock "process_$app"
+			export TMP=$TMP$app
+			export TMP_STATUS=$TMP_STATUS$app
+			export TMP_STATUS2=$TMP_STATUS2$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				start_time=$(date)
+				log '#main#' "START Graceful Restart: $app@$node"
+				{
+					export keep_output="yes"
+					$MYDIR/balancer_ctl out $node
+					if isBalancerConfigured $app; then
+						wait_dialog 30 20 \
+							"Waiting 10 minutes for JBoss to finish serving requests..."
+						#wait_dialog 1 3 \
+						#	"Waiting 3 seconds for JBoss to finish serving requests..."
+					fi
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+		                        if [ $? = 0 ]; then
+						$MYDIR/jboss_ctl enable $app "$node"
+						$MYDIR/balancer_ctl in $node
+						$MYDIR/jboss_ctl start $app "$node"
+						# Rollback if $app couldn't start
+						if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+							$MYDIR/jboss_ctl stop $app "$node"
+						fi
+			                        # TODO: Delete Centreon downtime for $app@$node
+			                        #if [ ! $STG ]; then delete_downtime "$node" ; fi
+					fi
+				} | progress_dialog "JBoss graceful restart: $node"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful restart $app@$node report"
+				log '#main#' "END Graceful Restart: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				start_time=$(date)
+				server="$select_mode"
+				nodes=$(getNodes $app 'application' $server)
+				log '#main#' "START Graceful Restart: $app@$server"
+				export keep_output="yes"
+				for node in $nodes; do
+					$MYDIR/balancer_ctl out $node
+					if isBalancerConfigured $app; then
+						wait_dialog 30 20 \
+							"Waiting 10 minutes for JBoss to finish serving requests..."
+						#wait_dialog 1 3 \
+						#	"Waiting 3 seconds for JBoss to finish serving requests..."
+					fi
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+					$MYDIR/jboss_ctl enable $app "$node"
+					$MYDIR/balancer_ctl in $node
+					$MYDIR/jboss_ctl start $app "$node"
+					if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+						$MYDIR/jboss_ctl stop $app "$node"
+						break
+					fi
+		                        # TODO: Delete Centreon downtime for $app@$server
+		                        #if [ ! $STG ]; then delete_downtime "$server" ; fi
+				done | progress_dialog "JBoss graceful restart: $app@$server"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful restart $app on $server report"
+				log '#main#' "END Graceful Restart: $app@$server"
+			# If every node from app is selected
+			else
+				log '#main#' "START Graceful Restart: $app on every server"
+				export keep_output="yes"
+				start_time=$(date)
+				for server in $servers; do
+					nodes=$(getNodes $app 'application' $server)
+					for node in $nodes; do
+						$MYDIR/balancer_ctl out $node
+						if isBalancerConfigured $app; then
+							wait_dialog 30 20 \
+								"Waiting 10 minutes for JBoss to finish serving requests..."
+							#wait_dialog 1 3 \
+
+							#	"Waiting 3 seconds for JBoss to finish serving requests..."
+						fi
+						$MYDIR/jboss_ctl disable $app "$node"
+						if [ ! $STG ]; then downtime "$node" ; fi
+						$MYDIR/jboss_ctl stop $app "$node"
+						$MYDIR/jboss_ctl enable $app "$node"
+						$MYDIR/balancer_ctl in $node
+						$MYDIR/jboss_ctl start $app "$node"
+						if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+							$MYDIR/jboss_ctl stop $app "$node"
+							break 2
+						fi
+		                        	# TODO: Delete Centreon downtime for $app
+			                        #if [ ! $STG ]; then delete_downtime "$server" ; fi
+					done
+				done | progress_dialog "JBoss graceful restart: $app"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful restart $app on every server report"
+				log "END Graceful Restart: $app on every server"
+			fi
+			unlock "process_$app"
+		;; 
+		"Full restart")
+			app=$(app_menu "Full restart\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			export keep_output="yes"
+			start_time=$(date)
+			lock "process_$app"
+			export TMP=$TMP$app
+			export TMP_STATUS=$TMP_STATUS$app
+			export TMP_STATUS2=$TMP_STATUS2$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				log '#main#' "START Full Restart: $app@$node"
+				{
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+				} | progress_dialog "Stop JBoss..."
+				cat $TMP >> $REPORT
+				# Pause for manual operations
+				print_dialog "Perform manual operations" \
+					     "Proceed to perform manual operations now.\n
+	                                             Press Enter to continue"
+				{
+					###cat $TMP >> $REPORT
+					unset keep_output
+					$MYDIR/jboss_ctl enable $app "$node"
+					export keep_output="yes"
+					$MYDIR/jboss_ctl start $app "$node"
+				} | progress_dialog "JBoss start summary"
+				cat $TMP >> $REPORT
+				unset keep_output
+			        # TODO: Delete Centreon downtime for $app@$node
+				#if [ ! $STG ]; then delete_downtime "$node" ; fi
+				$MYDIR/jboss_ctl status $app "$node" | \
+					progress_dialog "JBoss node $node status"
+				end_time=$(date)
+				report "$start_time" "$end_time" "full restart $app@$node report"
+				log '#main#' "END Full Restart: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				server="$select_mode"
+				nodes=$(getNodes $app 'application' $server)
+				log '#main#' "START Full Restart: $app@$server"
+				{
+					for node in $nodes; do
+						if [ ! $STG ]; then downtime "$node" ; fi
+					done
+					$MYDIR/jboss_ctl disable $app "$server"
+					$MYDIR/jboss_ctl stop $app "$server"
+				} | progress_dialog "Stop JBoss $app@$server"
+				# Pause for manual operations
+				print_dialog "Perform manual operations" \
+					     "Proceed to perform manual operations now.
+                                              Press Enter to continue"
+				{
+					cat $TMP >> $REPORT
+					unset keep_output
+					$MYDIR/jboss_ctl enable $app "$server"
+					export keep_output="yes"
+					$MYDIR/jboss_ctl start $app "$server"
+				} | progress_dialog "JBoss start summary"
+				cat $TMP >> $REPORT
+				unset keep_output
+				#wait_dialog 1 3 "Waiting 3 seconds for JBoss to start" | \
+				wait_dialog 3 10 "Waiting 30 seconds for JBoss to start" | \
+					progress_dialog "nosummary" "Waiting for JBoss to start..."
+		                # TODO: Delete Centreon downtime for $app@$server
+			        #if [ ! $STG ]; then delete_downtime "$server" ; fi
+				$MYDIR/jboss_ctl status $app "$server" | \
+					progress_dialog "JBoss $app@$server status"
+				end_time=$(date)
+				report "$start_time" "$end_time" "full restart $app on $server report"
+				log '#main#' "END Full Restart: $app@$server"
+			# If every node from app is selected
+			else
+				log '#main#' "START Full Restart: $app on every server"
+				{
+					if [ ! $STG ]; then $MYDIR/maintenance_ctl enable $app; fi
+					# Disable & remove from apache & stop JBoss
+					for server in $servers; do
+						nodes=$(getNodes $app 'application' $server)
+							for node in $nodes; do
+								if [ ! $STG ]; then downtime "$node" ; fi
+							done
+							$MYDIR/jboss_ctl disable $app "$server"
+							$MYDIR/jboss_ctl stop $app "$server"
+					done
+				} | progress_dialog "Stop JBoss $app"
+				# Pause for manual operations
+				print_dialog "Perform manual operations" \
+					     "Proceed to perform manual operations now.
+                                              Press Enter to continue"
+				# Enable & start JBoss
+				cat $TMP >> $REPORT
+				rm -f $TMP
+				for server in $servers; do
+					$MYDIR/jboss_ctl enable $app "$server"
+					$MYDIR/jboss_ctl start $app "$server"
+				done | progress_dialog "JBoss start summary"
+				cat $TMP >> $REPORT
+				unset keep_output
+				# Wait for JBoss to be available
+				#wait_dialog 1 3 "Waiting 3 seconds for JBoss to start" | \
+				wait_dialog 3 40 "Waiting 2 minutes for JBoss to start" | \
+					progress_dialog "nosummary" "Waiting for JBoss to start..."
+				# TODO: Delete Centreon downtime for $app
+				#if [ ! $STG ]; then delete_downtime "$server" ; fi
+				# Show JBoss nodes' status
+				$MYDIR/jboss_ctl status $app | \
+					progress_dialog "JBoss $app nodes status"
+				cat $TMP >> $REPORT
+				rm -f $TMP
+				export keep_output="yes"
+				if [ ! $STG ]; then
+					$MYDIR/maintenance_ctl disable $app | \
+						progress_dialog "Mod-Jk summary"
+				fi
+				end_time=$(date)
+				report "$start_time" "$end_time" "full restart $app on every server report"
+				log '#main#' "END FUll Restart: $app on every server"
+			fi
+			unlock "process_$app"
+		;;
+		"Graceful stop")
+			app=$(app_menu "Graceful stop\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			export keep_output="yes"
+			start_time=$(date)
+			lock "process_$app"
+			export TMP=$TMP$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				log '#main#' "START Graceful Stop: $app@$node"
+				{
+					$MYDIR/balancer_ctl out $node
+					#wait_dialog 1 3 \
+					#	"Waiting  3 seconds for JBoss to finish serving requests..."
+					wait_dialog 30 20 \
+						"Waiting 10 minutes for JBoss to finish serving requests..."
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+				} | progress_dialog "JBoss graceful stop: $node"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful stop $app@$node report"
+				log '#main#' "END Graceful Stop: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				server="$select_mode"
+				log '#main#' "START Graceful Stop: $app@$server"
+				for node in $(getNodes $app 'application' $server); do
+					$MYDIR/balancer_ctl out $node
+					wait_dialog 30 20 \
+						"Waiting 10 minutes for JBoss to finish serving requests..."
+					#wait_dialog 1 3 \
+					#	"Waiting 3 seconds for JBoss to finish serving requests..."
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+				done | progress_dialog "JBoss graceful stop: $app@$server"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful stop $app on $server report"
+				log '#main#' "END Graceful Stop: $app@$server"
+			# If every node from app is selected
+			else
+				temp_servers=( ${servers[*]} )
+				servers_no=${#temp_servers[@]}
+				cservers=0
+				log '#main#' "START Graceful Stop: $app on every server"
+				for server in $servers; do
+					let cservers=cservers+1
+					nodes=$(getNodes $app 'application' $server)
+					temp_nodes=( ${nodes[*]} )
+					nodes_no=${#temp_nodes[@]}
+					cnodes=0
+					for node in $nodes; do
+						if [ "$cservers" = "$servers_no" ]; then
+							let cnodes=cnodes+1
+							# Enable maintenance for $app before stopping last node
+							if [ "$cnodes" = "$nodes_no" ]; then
+								if [ ! $STG ]; then
+									$MYDIR/maintenance_ctl enable $app
+								fi
+							fi
+						fi
+						$MYDIR/balancer_ctl out $node
+						wait_dialog 30 20 \
+							"Waiting 10 minutes for JBoss to finish serving requests..."
+						#wait_dialog 1 3 \
+						#	"Waiting 3 seconds for JBoss to finish serving requests..."
+						if [ ! $STG ]; then downtime "$node" ; fi
+						$MYDIR/jboss_ctl disable $app "$node"
+						$MYDIR/jboss_ctl stop $app "$node"
+					done
+				done | progress_dialog "JBoss graceful stop: $app"
+				end_time=$(date)
+				report "$start_time" "$end_time" "graceful stop $app on every server report"
+				log '#main#' "END Graceful Stop: $app on every server"
+			fi
+			unlock "process_$app"
+		;; 
+		"Full stop")
+			app=$(app_menu "Stop application nodes\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			export keep_output="yes"
+			start_time=$(date)
+			lock "process_$app"
+			export TMP=$TMP$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				log '#main#' "START Full Stop: $app@$node"
+				{
+					if [ ! $STG ]; then downtime "$node" ; fi
+					$MYDIR/jboss_ctl disable $app "$node"
+					$MYDIR/jboss_ctl stop $app "$node"
+				} | progress_dialog "JBoss full stop: $node"
+				end_time=$(date)
+				report "$start_time" "$end_time" "full stop $app@$node report"
+				log '#main#' "END Full Stop: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				server="$select_mode"
+				nodes=$(getNodes $app 'application' $server)
+				log '#main#' "START Full Stop: $app@$server"
+				{
+					for node in $nodes; do
+						if [ ! $STG ]; then downtime "$node" ; fi
+					done
+					$MYDIR/jboss_ctl disable $app "$server"
+					$MYDIR/jboss_ctl stop $app "$server"
+				} | progress_dialog "JBoss full stop: $app@$server"
+				end_time=$(date)
+				report "$start_time" "$end_time" "full stop $app on $server report"
+				log '#main#' "END Full Stop: $app@$server"
+			# If every node from app is selected
+			else
+				temp_servers=( ${servers[*]} )
+				servers_no=${#temp_servers[@]}
+				cservers=0
+				log '#main#' "START Full Stop: $app on every server"
+				for server in $servers; do
+					let cservers=cservers+1
+					nodes=$(getNodes $app 'application' $server)
+					for node in $nodes; do
+						if [ ! $STG ]; then downtime "$node" ; fi
+					done
+					$MYDIR/jboss_ctl disable $app "$server"
+					# Enable maintenance for $app before stopping last server
+					if [ "$cservers" = "$servers_no" ]; then
+						if [ ! $STG ]; then
+							$MYDIR/maintenance_ctl enable $app
+						fi
+					fi
+					$MYDIR/jboss_ctl stop $app "$server"
+				done | progress_dialog "JBoss full stop: $app"
+				end_time=$(date)
+				report "$start_time" "$end_time" "full stop $app on every server report"
+				log '#main#' "END Full Stop: $app on every server"
+			fi
+			unlock "process_$app"
+		;; 
+		"Graceful start")
+			app=$(app_menu "Graceful start\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			export keep_output="yes"
+			start_time=$(date)
+			lock "process_$app"
+			export TMP=$TMP$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				log '#main#' "START Graceful Start: $app@$node"
+				{
+					$MYDIR/balancer_ctl in $node
+					$MYDIR/jboss_ctl enable $app "$node"
+					$MYDIR/jboss_ctl start $app "$node"
+				} | progress_dialog "JBoss Mod-Jk add & JBoss start: $node"
+				# TODO: Delete Centreon downtime for $node | \
+				#	progress_dialog "JBoss Mod-Jk add: $node"
+				end_time=$(date)
+				report "$start_time" "$end_time" "Graceful start $app@$node report"
+				log '#main#' "END Graceful Start: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				server="$select_mode"
+				nodes=$(getNodes $app 'application' $server)
+				log '#main#' "START Graceful Start: $app@$server"
+				for node in $nodes; do
+					$MYDIR/balancer_ctl in $node
+					$MYDIR/jboss_ctl enable $app "$node"
+					$MYDIR/jboss_ctl start $app "$node"
+				done | progress_dialog "JBoss Mod-Jk add & JBoss start: $app@$server"
+				#for node in $nodes; do
+					# TODO: Delete Centreon downtime for $node
+				#done | progress_dialog "JBoss Mod-Jk add: $app@$server"
+				end_time=$(date)
+				report "$start_time" "$end_time" "Graceful start $app on $server report"
+				log '#main#' "END Graceful Start: $app@$server"
+			# If every node from app is selected
+			else
+				temp_servers=( ${servers[*]} )
+				servers_no=${#temp_servers[@]}
+				cservers=0
+				log '#main#' "START Graceful Start: $app on every server"
+				for server in $servers; do
+					let cservers=cservers+1
+					# Disable maintenance for $app before starting last server nodes
+					if [ "$cservers" = "$servers_no" ]; then
+						if [ ! $STG ]; then
+							$MYDIR/maintenance_ctl disable $app
+						fi
+					fi
+					nodes=$(getNodes $app 'application' $server)
+					for node in $nodes; do
+						$MYDIR/balancer_ctl in $node
+						$MYDIR/jboss_ctl enable $app "$node"
+						$MYDIR/jboss_ctl start $app "$node"
+					done
+					#for node in $nodes; do
+					#	# TODO: Delete Centreon downtime for $node
+					#done
+				done | progress_dialog "JBoss Mod-Jk add & JBoss start: $app"
+				end_time=$(date)
+				report "$start_time" "$end_time" "Graceful start $app on every server report"
+				log '#main#' "END Graceful Start: $app on every server"
+			fi
+			unlock "process_$app"
+		;; 
+		"Full start")
+			app=$(app_menu "Full start\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			export keep_output="yes"
+			start_time=$(date)
+			lock "process_$app"
+			export TMP=$TMP$app
+			# If selected only one node
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				log '#main#' "START Full Start: $app@$node"
+				{
+					$MYDIR/jboss_ctl enable $app "$node"
+					$MYDIR/jboss_ctl start $app "$node"
+				} | progress_dialog "JBoss full start: $node"
+				# TODO: Delete Centreon downtime for $node | \
+				#	progress_dialog "JBoss Mod-Jk add: $node"
+				end_time=$(date)
+				report "$start_time" "$end_time" "Full start $app@$node report"
+				log '#main#' "END Full Start: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				server="$select_mode"
+				log '#main#' "START Full Start: $app@$server"
+				{
+					$MYDIR/jboss_ctl enable $app "$server"
+					$MYDIR/jboss_ctl start $app "$server"
+				} | progress_dialog "JBoss full start: $app@$server"
+				#nodes=$(getNodes $app 'application' $server)
+				#for node in $nodes; do
+					# TODO: Delete Centreon downtime for $node
+				#done | progress_dialog "JBoss Mod-Jk add: $app@$server"
+				end_time=$(date)
+				report "$start_time" "$end_time" "Full start $app on $server report"
+				log '#main#' "END Full Start: $app@$server"
+			# If every node from app is selected
+			else
+				temp_servers=( ${servers[*]} )
+				servers_no=${#temp_servers[@]}
+				cservers=0
+				log '#main#' "START Full Start: $app on every server"
+				for server in $servers; do
+					let cservers=cservers+1
+					$MYDIR/jboss_ctl enable $app "$server"
+					$MYDIR/jboss_ctl start $app "$server"
+					#nodes=$(getNodes $app 'application' $server)
+					#for node in $nodes; do
+						# TODO: Delete Centreon downtime for $node
+					#done
+					# Disable maintenance for $app before starting last server nodes
+					if [ "$cservers" = "$servers_no" ]; then
+						if [ ! $STG ]; then
+							$MYDIR/maintenance_ctl disable $app
+						fi
+					fi
+				done | progress_dialog "JBoss full start: $app"
+				end_time=$(date)
+				report "$start_time" "$end_time" "Full start $app on every server report"
+				log '#main#' "END Full Start: $app on every server"
+			fi
+			unlock "process_$app"
+		;; 
+		"JBoss management")
+			app=$(app_menu "JBoss nodes management' information\n\nSelect application:") ; nextOrBack
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			action=$(jboss_action_menu) ; nextOrBack
+			action=${action,,}
+			if [ "$select_mode" = "allnodes" ]; then
+				selec_mode=""
+			fi
+			#log "START JBoss ${action^}: $app on $select_mode"
+			$MYDIR/jboss_ctl $action $app "$select_mode" | progress_dialog
+			#log "END JBoss ${action^}: $app on $select_mode"
+		;; 
+		"Cache management")
+			cache_app=$(cache_menu)
+			case $cache_app in
+				"Terracotta")
+					cache_ctl="terracotta_ctl" ; nextOrBack
+					app=$(terracotta_menu) ; nextOrBack
+					action=$(tc_action_menu); nextOrBack
+				;;
+				"Infinispan")
+					cache_ctl="infinispan_ctl" ; nextOrBack
+					app=$(infinispan_menu) ; nextOrBack
+					action=$(action_menu); nextOrBack
+				;;
+			esac
+			action=${action,,}
+			#log "START $cache_app ${action^}: $app"
+			$MYDIR/$cache_ctl $app "$action" | progress_dialog
+			#log "END $cache_app ${action^}: $app"
+		;;
+		"Balancer management")
+			app=$(app_menu "Balancer management\n\nSelect application:") ; nextOrBack
+			servers=$(getServer $app 'application')
+			select_mode=$(node_select_mode $app 'application') ; nextOrBack
+			action=$(balancer_action_menu) ; nextOrBack
+			action=${action,,}
+			if isNode "$select_mode" ; then
+				node=$select_mode
+				#log "START Mod-Jk Balancer ${action^}: $app@$node"
+				{
+					DISABLE_HEADER="yes" $MYDIR/balancer_ctl $action $node
+				} | progress_dialog "Balancer management: $action $node"
+				#log "END Mod-Jk Balancer ${action^}: $app@$node"
+			# If selected server
+			elif [ "$select_mode" != "allnodes" ]; then
+				export keep_output="yes"
+				server="$select_mode"
+				nodes=$(getNodes $app 'application' $server)
+				#log "START Mod-Jk Balancer ${action^}: $app@$server"
+				for node in $nodes; do
+					DISABLE_HEADER="yes" $MYDIR/balancer_ctl $action $node
+				done | progress_dialog "Balancer management: $action $app@$server"
+				#log "END Mod-Jk Balancer ${action^}: $app@$server"
+			# If every node from app is selected
+			else
+				export keep_output="yes"
+				#log "START Mod-Jk Balancer ${action^}: $app on every server"
+				for server in $servers; do
+					nodes=$(getNodes $app 'application' $server)
+					for node in $nodes; do
+						DISABLE_HEADER="yes" $MYDIR/balancer_ctl $action $node
+					done
+				done | progress_dialog "Balancer management: $action $app"
+				#log "END Mod-Jk Balancer ${action^}: $app on every server"
+			fi
+		;;
+		"Maintenance page management")
+			app=$(app_menu "Maintenance page management\n\nSelect application:") ; nextOrBack
+			action=$(maint_menu); nextOrBack
+			action=${action,,}
+			#log "START Maintenance ${action^}: $app"
+			$MYDIR/maintenance_ctl $action $app | progress_dialog
+			#log "END Maintenance ${action^}: $app"
+		;;
+		"JON Agent management")
+			servers=$(server_menu "" "" "Select server(s)") ; nextOrBack
+			action=$(action_menu) ; nextOrBack
+			action=${action,,}
+			#log "START JON Agent ${action^}: $servers"
+			$MYDIR/jon_ctl agent $action $servers | progress_dialog
+			#log "END JON Agent ${action^}: $servers"
+		;;
+		"JON Server management")
+                        action=$(action_menu) ; nextOrBack
+			action=${action,,}
+			#log "START JON Server: ${action^}"
+			$MYDIR/jon_ctl "server" $action | progress_dialog
+			#log "END JON Server: ${action^}"
+		;;
+                "Clean temp")
+			app=$(app_menu "Clean temp files\n\nSelect application:") ; nextOrBack
+			{
+                        	echo -n "Cleaning $app temps... " | tee $TMP
+	                        if [ -e "$LOCK_DIR/$app.pid" ]; then
+	                                _pid=$(cat $LOCK_DIR/$app.pid)
+	                                if kill -0 $_pid > /dev/null 2>&1; then
+	                                        echo -e "ERROR!!\n\t - Another process ($_pid) is performing actions on application \`$app\`" | tee -a $TMP
+	                                else
+	                        		rm -fr $LOCK_DIR/$app $LOCK_DIR/$app.pid
+						echo "done" | tee -a $TMP
+					fi
+				else
+	                        	rm -fr $LOCK_DIR/$app $LOCK_DIR/$app.pid
+					echo "done" | tee -a $TMP
+	                        fi
+			} | progress_dialog
+                ;;
+	esac
+done
+cleanTemps
+clear

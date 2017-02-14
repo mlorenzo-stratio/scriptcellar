@@ -1,0 +1,75 @@
+# <secret_type> | <variable from file passwords/passwords.pass> | <vault_url1> <vault_url2> ... <vault_urlN>
+# <secret_type> | <filename referred via variable on passwords.pass> | <vault_url1> <vault_url2> ... <vault_urlN>
+# <secret_type> | <filename> | <vault_url1> <vault_url2> ... <vault_urlN>
+#
+# Reserved variables are:
+#  - $passwords refers to the folder containing all files with passwords
+
+# STANDARD keystore_pass JSON
+# { keystore_pass: $KEYSTORE_PASS }
+keystore_pass | $gosec_sso_kafka_truststore | gosec/gosec-sso/kafka/truststore/keystore
+keystore_pass | $gosec_sso_keystore | gosec/gosec-sso/tls/keystore
+keystore_pass | $gosec_kafka_truststore | gosec/gosec-kafka/truststore/keystore
+keystore_pass | $gosec_kafka_keystore | gosec/gosec-kafka/tls/keystore
+keystore_pass | $gosec_spark_admin_job_truststore | gosec/gosec-spark-admin-job/kafka/truststore/keystore
+keystore_pass | $gosec_management_keystore | gosec/gosec-management/tls/keystore
+keystore_pass | $metrics_kafka_truststore | stratio-paas/metrics-kafka/truststore/keystore
+keystore_pass | $metrics_kafka_keystore | stratio-paas/metrics-kafka/tls/keystore
+keystore_pass | $metronome_keystore | stratio-paas/metronome/tls/keystore
+keystore_pass | $crossdata1_keystore | crossdata/crossdata1/tls/keystore
+keystore_pass | $crossdata2_keystore | crossdata/crossdata2/tls/keystore
+keystore_pass | $crossdata1_gosec_plugin_keystore | crossdata/crossdata1/gosec-plugin/x509-auth/keystore
+keystore_pass | $crossdata2_gosec_plugin_keystore | crossdata/crossdata2/gosec-plugin/x509-auth/keystore
+keystore_pass | $viewer1_keystore | viewer/viewer1/tls/keystore
+keystore_pass | $viewer1_truststore | viewer/viewer1/truststore/keystore
+keystore_pass | $viewer1_cert_keystore | viewer/viewer1/x509-auth/keystore
+
+# KEYSTORE_KEY_PASS
+# { keystore_pass: $keystore, key_pass: $key }
+keystore_key_pass | $passwords/gosec-spark-admin-job.keystore_key | gosec/gosec-spark-admin-job/kafka/x509-auth/keystore
+keystore_key_pass | $passwords/gosec-sso-kafka.keystore_key | gosec/gosec-sso/kafka/x509-auth/keystore
+
+# TRUSTSTORE CERTS
+# { certificate: $CRT }
+trusted_crt | ca/root-ca.crt | gosec/gosec-spark-admin-job/kafka/truststore/certs/1
+trusted_crt | ca/root-ca.crt | gosec/gosec-sso/kafka/truststore/certs/1
+trusted_crt | ca/root-ca.crt | gosec/gosec-kafka/truststore/certs/1/x509-cert
+trusted_crt | ca/root-ca.crt | stratio-paas/metrics-kafka/truststore/certs/1/x509-cert
+trusted_crt | ca/root-ca.crt | viewer/viewer1/truststore/certs/1/x509-cert
+trusted_crt | ca/root-ca.crt | crossdata/crossdata1/truststore/certs/1
+trusted_crt | ca/root-ca.crt | crossdata/crossdata2/truststore/certs/1
+trusted_crt | ca/root-ca.crt | stratio-paas/metrics-kafka/truststore/certs/1/x509-cert
+trusted_crt | ca/root-ca.crt | stratio-paas/telegraf/x509-auth/trust-ca-cert
+
+# LDAP_CONFIG
+# { user: $user, pass: $pass }
+ldap_config | $passwords/gosec_management.ldap_secret | gosec/gosec-management/ldap
+ldap_config | $passwords/gosec_sso.ldap_secret | gosec/gosec-sso/ldap
+ldap_config | $passwords/crossdata.ldap | crossdata/crossdata1/gosec-plugin/ldap
+ldap_config | $passwords/crossdata.ldap | crossdata/crossdata2/gosec-plugin/ldap
+
+# GOSEC_MGMT_OAUTH
+# { $GOSEC_MANAGEMENT_CLIENT_ID: $GOSEC_MANAGEMENT_CLIENT_SECRET }
+gosec-mgmt-oauth | $passwords/gosec_management.client_secret | gosec/gosec-management/oauth-info
+
+# OAUTH_CLIENTS
+# { 1: $OAUTH_CLIENT[0], 2: $OAUTH_CLIENT[1], ... , $OAUTH_CLIENT[N] }
+# $passwords/gosec_sso.client_secrets contains one oauth_client per line
+oauth_clients | $passwords/gosec_sso.client_secrets | gosec/gosec-sso/cas/oauth-clients
+
+# TGC
+# { tgc.encryption.key: $tgckey, tgc.signing.key: $tgcsign }
+tgc_enc | $passwords/gosec_sso.tgc | gosec/gosec-sso/cas/tgc
+
+# TOKEN
+# { token: $V_TOKEN }
+token | $passwords/gosec_sso.token | gosec/gosec-sso/vault
+
+# CRYPTO_SECRET
+# { crypto_secret: $SECRET_KEY }
+crypto_secret | $passwords/viewer.secret | viewer/viewer1/crypto-secret
+
+# IAAS_SECRETS
+# if $tenant != "" { userId: $userid, userSecret: $secret, tenantName: $tenant }
+# else { userId: $userid, userSecret: $secret }
+iaas_secrets | $passwords/iaas.secrets | iaas/secrets

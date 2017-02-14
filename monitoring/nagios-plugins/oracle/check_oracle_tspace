@@ -1,0 +1,52 @@
+#!/bin/bash
+
+TABLESPACE=$1
+WARNING=$2
+CRITICAL=$3
+
+TMP=$(mktemp)
+
+export ORACLE_HOME=/u01/app/oracle/product/11.2.0/dbhome_1
+export ORACLE_SID=prdrbo_1
+
+has_pmon(){
+        if ps -fe | grep -v grep | grep -E "ora_pmon_prdrbo" -q ; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+HOST=""
+
+if has_pmon ; then
+	HOST=" (madup01)"
+        sudo -u oracle /usr/local/nagios/libexec/check_tspace $TABLESPACE > $TMP
+else
+	HOST=" (madup02)"
+        ssh madup02 sudo -u oracle /usr/local/nagios/libexec/check_tspace $TABLESPACE > $TMP
+fi
+
+USED=`cat $TMP | awk '{print $2}' `
+
+if [ `echo $USED | sed 's/\.//'` -lt `echo $WARNING | sed 's/\.//'` ]; then
+        TEXT="Tablespace$HOST usage OK - $USED% used"
+        echo $TEXT
+	rm $TMP
+        exit 0
+fi
+if [ `echo $USED | sed 's/\.//'` -ge `echo $WARNING | sed 's/\.//'` ] && [ `echo $USED | sed 's/\.//'` -lt `echo $CRITICAL | sed 's/\.//'` ]; then
+        TEXT="TABLESPACE$HOST USAGE WARNING - $USED% USED"
+        echo $TEXT
+	rm $TMP
+        exit 1
+fi
+if [ `echo $USED | sed 's/\.//'` -ge `echo $CRITICAL | sed 's/\.//'` ]; then
+        TEXT="TABLESPACE$HOST USAGE CRITICAL - $USED% USED"
+        echo $TEXT
+	rm $TMP
+        exit 2
+fi
+
+rm $TMP
+exit 0

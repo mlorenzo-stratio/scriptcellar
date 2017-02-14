@@ -1,0 +1,17 @@
+#!/bin/bash
+
+HOST=$1
+WARNING=$2
+CRITICAL=$3
+
+
+OUTPUT=$(/usr/local/nagios/libexec/check_tcp -H $HOST -p 1521 -w $WARNING -c $CRITICAL)
+STATUS=$?
+
+if [[ "$OUTPUT" =~ "No route to host" ]] || [[ "$OUTPUT" =~ "Connection refused" ]]; then
+	echo "Oracle Listener is DOWN!!"
+	exit $STATUS
+else
+	echo $OUTPUT | sed -e "s/^\([^ ]* [^ ]*\) - \([^ ]*\).*|\(.*\)$/Oracle Listener \1 - \2 seconds | \3/"
+	exit $STATUS
+fi

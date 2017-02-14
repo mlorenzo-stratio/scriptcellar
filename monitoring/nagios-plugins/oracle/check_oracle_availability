@@ -1,0 +1,26 @@
+#!/bin/bash
+
+DB=${1,,}
+PASS=""
+PROFILE=""
+
+if [ $DB = "front" ]; then
+        PROFILE="/home/oracle/.bash_FRONTprofile"
+        PASS="prdrmbw/mc3t1pdy35PM@FRONTPRD"
+elif [ $DB = "back"]; then
+        PROFILE="/home/oracle/.bash_profile"
+	PASS="system/v3ranit0by3@PRDRBOPRD"
+else
+        PROFILE="/home/oracle/.bash_profileBMS"
+	PASS="system/v3ranit0by3@BMSPRD"
+fi
+
+. $PROFILE 2>/dev/null
+TEST_DATE=$($ORACLE_HOME/bin/sqlplus -s $PASS @/usr/local/nagios/libexec/check_oracle_availability.sql | grep .)
+DATE=$(date +%d-%b-%y | tr -t '[[:lower:]]' '[[:upper:]]')
+if [ "$TEST_DATE" = "$DATE" ]; then
+	echo "Oracle is available"
+else
+	echo 'Oracle is NOT available!!'
+	exit 2
+fi

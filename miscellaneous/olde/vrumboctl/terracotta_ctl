@@ -1,0 +1,103 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME	<app> <start|restart> [--delete]
+        $SCRIPTNAME	<app> <stop|kill|info>
+	Provides Terracotta nodes management
+EOH
+}
+
+terracotta_ctl(){
+        if [ "$1" = "internal" ]; then
+                local log_disabled="yes"
+                shift
+        fi
+        local app=$1
+        local action=$2
+        local output
+        local count=0
+        if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+	#[ ! $log_disabled ] && log "Performing $action terracotta for $app"
+        case "$action" in
+                start|stop|kill|info|'start with data deletion')
+        		servers=$(getServer $app 'terracotta')
+                        local TOTAL=$(echo $servers | wc -w)
+                        for server in $servers; do
+				log -n "$action terracotta on $app@$server... "
+				print_percent
+                                _action=$action
+                                if [ "$_action" = "start" ]; then
+                                        delete_data="no-delete"
+                                elif [ "$_action" = "start with data deletion" ]; then
+                                        _action="start"
+                                        delete_data="delete"
+                                else
+                                        delete_data=""
+                                fi
+				local version=$(getNodes $app 'terracotta' $server)
+                                output="$server\t$($DEBUG ssh $server $TERRACOTTA_CTL $version/$app $_action $delete_data | tr -t '\n' '#' | tr -s '#')"
+                                if [ $? != 0 ]; then
+                                        log -a "ERROR!!"
+                                        log "terracotta_ctl: output: $(echo -e $output | sed -e "s/^#Server info/Server info/" -e "s/#/\n\t/g")"
+                                else
+                                        log -a "OK"
+                                fi
+                                let count=count+1
+				print_comment
+                                echo -e $output | sed -e "s/^#Server info/Server info/" -e "s/#/\n\t/g" | tee -a $TMP
+				print_comment
+				print_percent
+                        done
+                ;;
+                'restart with data deletion')
+                        export keep_output="yes"
+                        terracotta_ctl "internal" $app stop
+                        sleep 1
+                        terracotta_ctl "internal" $app "start with data deletion"
+                ;;
+                restart)
+                        export keep_output="yes"
+                        terracotta_ctl "internal" $app stop
+                        sleep 1
+                        terracotta_ctl "internal" $app start
+                ;;
+        esac
+	#[ ! $log_disabled ] && log "Finished $action terracotta for $app"
+}
+
+listApps(){
+	getTCApps | while IFS=':' read app servers; do
+		echo -e "\t- $app: $(echo $servers | sed -e "s/ /, /g" -e "s/ ,$//")"
+	done
+}
+
+check_arg 1 "" $* || exit $?
+app=$1
+action=${2,,}
+delete=$3
+
+if [ "$delete" = "--delete" ] && [ $action = "start" -o $action = "restart" ]; then
+	action="$action with data deletion"
+fi
+retrieve_configuration
+case "$action" in
+        start|stop|info|kill|restart|'restart with data deletion'|'start with data deletion') ;;
+        *)              usage ; echo -e "\nAvailable apps are:" ; listApps ; exit $UNKNOWN_OPTION_SPECIFIED ;;
+esac
+
+if ! isApp $app; then
+        usage
+	echo -e "\nApp \`$app\` doesn't exist. Available apps are:"
+	listApps
+        exit $NON_EXISTANT_APP
+fi
+lock $app
+terracotta_ctl $app "$action"
+unlock $app

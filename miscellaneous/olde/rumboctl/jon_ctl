@@ -1,0 +1,152 @@
+#!/bin/bash
+
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME agent <start|stop|restart|kill|info> <server1...serverN>
+	 server <start|stop|restart|kill|info>
+	 Provides JON Server & Agent management
+EOH
+}
+
+jon_ctl(){
+        local env=$1
+        shift
+        local action=$1
+        shift
+        local servers=$*
+        local output
+        local count=0
+        if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+        case $action in
+                start|stop|kill|info)
+                        if [ "$env" = "agent" ]; then
+				log "Performing $action JON $env on $servers"
+                                local TOTAL=$(echo $servers | wc -w)
+                                for server in $servers; do
+					print_percent
+					log -n "$action JON $env on $server... "
+                                        output="$server\n\t$($DEBUG ssh $server $JON_CTL $env $action)\n"
+	                                if [ $? != 0 ]; then
+	                                        log -a "ERROR!!"
+	                                        log "output: $output"
+	                                else
+	                                        log -a "OK"
+	                                fi
+                                        let count=count+1
+					print_comment
+                                        echo -e $output | tee -a $TMP
+					print_comment
+					print_percent
+                                done
+                        else
+				log -n "Performing $action JON $env... "
+				local TOTAL=1
+				print_percent
+                                output=$($DEBUG $JON_CTL $env $action | tr -t '\n' '_')
+                                if [ $? != 0 ]; then
+                                        log -a "ERROR!!"
+                                        log "output: $output"
+                                else
+                                        log -a "OK"
+                                fi
+				print_comment
+                                echo -e $output | tr -t '_' '\n' | tee $TMP
+				let count=count+1
+				print_comment
+				print_percent
+                        fi
+                ;;
+                restart)
+                        if [ "$env" = "agent" ]; then
+				log "Performing $action JON $env on $servers"
+                                # Stop
+                                local TOTAL=$(echo $(echo $servers | wc -w)*2 | bc)
+                                for server in $servers; do
+					print_percent
+					log -n "stop JON $env on $server... "
+                                        output="$server\n\t$($DEBUG ssh $server "$JON_CTL $env stop")\n"
+	                                if [ $? != 0 ]; then
+	                                        log -a "ERROR!!"
+	                                        log "output: $output"
+	                                else
+	                                        log -a "OK"
+	                                fi
+                                        let count=count+1
+					print_comment
+                                        echo -e $output | tee -a $TMP
+					print_comment
+					print_percent
+                                done
+                                sleep 1
+                                # Start
+                                for server in $servers; do
+					print_percent
+					log -n "start JON $env on $server... "
+                                        output="$server\n\t$($DEBUG ssh $server "$JON_CTL $env start")\n"
+	                                if [ $? != 0 ]; then
+	                                        log -a "ERROR!!"
+	                                        log "output: $output"
+	                                else
+	                                        log -a "OK"
+	                                fi
+                                        let count=count+1
+					print_comment
+                                        echo -e $output | tee -a $TMP
+					print_comment
+					print_percent
+                                done
+				log "Finished $action JON $env on $servers "
+                        else
+				local TOTAL=1
+				print_percent
+				log -n "Performing $action JON $env... "
+                                output=$($DEBUG $JON_CTL $env stop && sleep 1 && $DEBUG $JON_CTL $env start)
+                                if [ $? != 0 ]; then
+                                        log -a "ERROR!!"
+                                        log "output: $output"
+                                else
+                                        log -a "OK"
+                                fi
+				print_comment
+                                echo -e $output | tee $TMP
+				print_comment
+				print_percent
+                        fi
+                ;;
+        esac
+}
+
+if [ "$1" != "agent" -a "$1" != "server" ]; then
+	usage
+	exit $UNKNOWN_OPTION_SPECIFIED
+fi
+
+env=$1
+shift
+action=${1,,}
+case "$action" in
+        start|stop|restart|info|kill|restart) ;;
+        *)              usage ; exit $UNKNOWN_OPTION_SPECIFIED ;;
+esac
+
+if [ "$env" = "server" ]; then
+	check_arg 1 "" $* || exit $?
+else
+	check_arg 2 "" $* || exit $?
+fi
+shift
+servers=$*
+
+retrieve_configuration
+if [ "$env" = "agent" ] && ! servers=$(checkServers $servers) ; then
+	exit $NON_EXISTANT_SERVER
+elif [ "$env" = "server" ] && [ -n "$servers" ]; then
+	echo "$SCRIPTNAME: server option does not accept servers"
+	exit $WRONG_SCRIPT_EXECUTION
+fi
+jon_ctl $env $action $servers

@@ -1,0 +1,352 @@
+#!/bin/bash
+
+MYDIR=$(dirname $0)
+source $MYDIR/dialog_variables
+
+# Display progress dialog for showing the actions been taken
+progress_dialog(){
+	if [ "$1" = "nosummary" ]; then
+		local nosummary="yes"
+		shift
+	fi
+	local title=${1:-"Output summary"}
+	dialog --title "Performing operations" --gauge "Please wait while performing operations..." 10 80 > /dev/tty 2>&1
+	if [ ! $nosummary ]; then
+		sed -i '/XXX/d' $TMP
+		dialog --title "$title" --textbox "$TMP" 30 80 > /dev/tty 2>&1
+	fi
+}
+
+# Displays wait dialog
+wait_dialog(){
+       	local seconds=$1
+	shift
+	local times=$1
+	shift
+	local message=$*
+	local count=0
+	let TOTAL=times*seconds
+	if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+	while [ $times -gt 0 ]; do
+		print_percent
+		print_comment
+		if [ ! "$keep_output" ]; then
+			echo -e "$message" | tee $TMP
+		else
+			echo -e "$message"
+		fi
+		print_comment
+		sleep $seconds
+		message=$message"."
+		let count=count+1
+		let times=times-1
+		print_percent
+	done
+}
+
+# prints STDIN or args and adds it to $TMP file
+print_dialog(){
+	local title=$1
+	shift
+	local message
+	if [ $# = 0 ]; then
+		read message
+	else
+		message="$*"
+	fi
+	{
+		echo 100
+		echo XXX
+		echo -e $message | tee $TMP
+		echo XXX
+	} | progress_dialog "$title"
+}
+
+# Display dialog using specified parameters
+display_dialog(){
+	local message=$1
+	local height=$2
+	local width=$3
+	local text_height=$4
+	local -a options=("${!5}")
+	while [[ ! "$VALUE" =~ ^[[:digit:]]+$ ]] || ( [ -n "$VALUE" ] && [ "$VALUE" -lt 0 -o "$VALUE" -gt ${#options[@]} ] ); do
+		local VALUE=$(dialog --nocancel --menu "$message" $height $width $text_height "${options[@]}" 2>&1 > /dev/tty)
+	done
+	# If Exit pressed then return 1
+	if [ $VALUE = 0 ]; then
+		echo ${options[${#options[@]}-1]}
+		return 1
+	fi
+	let VALUE=2*VALUE
+	let VALUE=VALUE-1
+	echo ${options[$VALUE]}
+}
+
+# Display mode selection menu
+node_select_mode(){
+	local app=$1
+        local TYPE=$2
+	VALUE=$(display_dialog "Select mode selection for application: $app\n\nChoose node selection mode" 20 60 50 NODE_SELECT_MODE[@])
+	local STATUS=$?
+	case $VALUE in
+		# Only one node
+		"${NODE_SELECT_MODE[1]}") VALUE=$(node_menu $app $TYPE) ; STATUS=$?;;
+		# All nodes in selected server
+		"${NODE_SELECT_MODE[3]}") VALUE=$(server_menu $app $TYPE "Choose server application $app") ; STATUS=$?;;
+		# All nodes
+		"${NODE_SELECT_MODE[5]}") VALUE='allnodes' ;;
+		"${NODE_SELECT_MODE[7]}") VALUE='' ; STATUS=1 ;;
+	esac
+	echo $VALUE
+	return $STATUS
+}
+
+# Poll JBoss, Terracotta and Infinispan data
+initialize(){
+	dialog --title "Welcome to Rumbo Platform Management" --gauge "Lord Of The Scripts" 12 60 
+	dialog --title "Welcome to Rumbo Platform Management" --msgbox "$(cat $TMP)\n\n\nAll data loaded. Press 'Enter' to continue" 12 60 > /dev/tty 2>&1
+}
+
+# Display main menu
+main_menu(){
+	VALUE=$(display_dialog "Rumbo Platform Management" 21 60 20 MAIN_MENU[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display servers that hold specified APP/TYPE
+server_menu(){
+        local APP=$1
+        local TYPE
+	case $2 in
+		application)	TYPE='phoenix' ;;
+		*)		TYPE=$2 ;;
+	esac
+	local MESSAGE=$3
+        local option=1
+	local -a dialog_options
+
+        declare -a LIST
+        LIST=("${APPSERVERS[@]}")
+
+	# Create server list with the servers hosting the specified app
+        if [ -n "$APP" -a -n "$TYPE" ]; then
+                unset LIST
+                declare -a LIST
+        	local n=0
+                for server in $(getServer $APP $TYPE); do
+                        LIST[$n]=$server
+                        let n=n+1
+                done
+        fi
+
+	# Create dialog options from the list of servers created previously
+	local i=0
+	local ALL_SERVERS
+        for server in ${LIST[@]}; do
+		dialog_options[$i]=$option
+		let i=i+1
+		dialog_options[$i]=$server
+		let option=option+1
+		let i=i+1
+		ALL_SERVERS="$ALL_SERVERS $server"
+	done
+	dialog_options[$i]=$option
+	let i=i+1
+	dialog_options[$i]="All servers"
+	let i=i+1
+	dialog_options[$i]=0
+	let i=i+1
+	dialog_options[$i]="Back to main menu"
+	VALUE=$(display_dialog "$MESSAGE" 30 60 50 dialog_options[@])
+	local STATUS=$?
+	if [ "$VALUE" = "All servers" ]; then
+		VALUE=$ALL_SERVERS
+	fi
+	echo $VALUE
+	return $STATUS
+}
+
+# Display application menu
+app_menu(){
+	local MESSAGE=$1
+	local option=1
+	local -a dialog_options
+	local i=0
+	# Create dialog options from the list of apps
+	while read app; do
+		dialog_options[$i]=$option
+		let i=i+1
+		dialog_options[$i]=$app
+		let option=option+1
+		let i=i+1
+	done < $APP_LIST_FILE
+	dialog_options[$i]=0
+	let i=i+1
+	dialog_options[$i]="Back to main menu"
+	VALUE=$(display_dialog "$MESSAGE" 42 60 50 dialog_options[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display node menu
+node_menu(){
+        local APP=$1
+        local TYPE
+	case $2 in
+		application)	TYPE='phoenix' ;;
+		*)		TYPE=$2 ;;
+	esac
+	local SERVER=$3
+        local option=1
+	local -a dialog_options
+
+	# Create dialog options from the list of nodes that serve the specified app
+        if [ -n "$APP" -a -n "$TYPE" -a -n "$SERVER" ]; then
+                unset LIST
+                declare -a LIST
+        	local n=0
+                for node in $(getNodes $APP $TYPE $SERVER); do
+                        LIST[$n]=$node
+                        let n=n+1
+                done
+	# If no server specified then all nodes for specified app will be included
+        elif [ -z "$SERVER" ]; then
+                unset LIST
+                declare -a LIST
+                for node in $(getNodes $APP $TYPE); do
+                        LIST[$n]=$(echo $node | cut -d';' -f2)
+                        let n=n+1
+                done
+        fi
+
+	# Create dialog options from the node list
+	local i=0
+	local ALL_NODES
+        for node in ${LIST[@]}; do
+		dialog_options[$i]=$option
+		let i=i+1
+		dialog_options[$i]=$node
+		let option=option+1
+		let i=i+1
+		ALL_NODES="$ALL_NODES $node"
+	done
+	dialog_options[$i]=$option
+	let i=i+1
+	dialog_options[$i]="All nodes"
+	let i=i+1
+	dialog_options[$i]=0
+	let i=i+1
+	dialog_options[$i]="Back to main menu"
+	VALUE=$(display_dialog "Select node(s)" 42 60 50 dialog_options[@])
+	local STATUS=$?
+	if [ "$VALUE" = "All nodes" ]; then
+		VALUE=$ALL_NODES
+	fi
+	echo $VALUE
+	return $STATUS
+}
+
+# Display mail report options
+report_menu(){
+	VALUE=$(display_dialog "Select mail to report to" 13 30 40 MAIL[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display maintenance options
+maint_menu(){
+	VALUE=$(display_dialog "Select action" 13 30 40 MAINT_MENU[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display TC action options
+tc_action_menu(){
+	VALUE=$(display_dialog "Select action" 13 30 40 TC_ACTION_MENU[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display balancer action options
+balancer_action_menu(){
+	VALUE=$(display_dialog "Select action" 13 30 40 BALANCER_MENU[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display JBoss action options
+jboss_action_menu(){
+	VALUE=$(display_dialog "Select action" 13 30 40 JBOSS_ACTION_MENU[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display action options
+action_menu(){
+	VALUE=$(display_dialog "Select action" 13 30 40 ACTION_MENU[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display cache nodes menu
+cache_menu(){
+	VALUE=$(display_dialog "Select cache application" 20 60 50 CACHE_MENU[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display Terracotta menu
+terracotta_menu(){
+	local option=1
+	local -a dialog_options
+
+	# Create dialog options from the terracotta list
+	local i=0
+	while read tc; do
+		dialog_options[$i]=$option
+		let i=i+1
+		dialog_options[$i]=$tc
+		let option=option+1
+		let i=i+1
+	done < $TC_LIST_FILE
+	dialog_options[$i]=0
+	let i=i+1
+	dialog_options[$i]="Back to main menu"
+	VALUE=$(display_dialog "Select Terracotta" 20 60 50 dialog_options[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}
+
+# Display Infinispan menu
+infinispan_menu(){
+	local option=1
+	local -a dialog_options
+
+	# Create dialog options from the infinispan list
+	local i=0
+	while read ispn; do
+		dialog_options[$i]=$option
+		let i=i+1
+		dialog_options[$i]=$ispn
+		let option=option+1
+		let i=i+1
+	done < $ISPN_LIST_FILE
+	dialog_options[$i]=0
+	let i=i+1
+	dialog_options[$i]="Back to main menu"
+	VALUE=$(display_dialog "Select Infinispan" 20 60 50 dialog_options[@])
+	local STATUS=$?
+	echo $VALUE
+	return $STATUS
+}

@@ -1,0 +1,86 @@
+#!/bin/bash
+
+# OPTIONS ARRAYS
+JBOSS_ENV_LIST=('Only one node' 'All nodes in selected server' 'All nodes')
+
+MAIL=(	1	'support@rumbo.com' \
+	2	'systems@rumbo.com' \
+	3	'core_support@rumbo.com')
+
+NODE_SELECT_MODE=(1  'One node' \
+	 	  2  'Choose server' \
+		  3  'All nodes' \
+		  0  'Back to main menu')
+TC_ACTION_MENU=(  1  'Start' \
+		  2  'Stop' \
+		  3  'Start with data deletion' \
+ 		  4  'Restart' \
+ 		  5  'Kill' \
+ 		  6  'Info' \
+		  0  'Back to main menu')
+JBOSS_ACTION_MENU=(	  1  'Start' \
+			  2  'Stop' \
+			  3  'Restart' \
+			  4  'Enable' \
+			  5  'Disable' \
+	 		  6  'Kill' \
+	 		  7  'Info' \
+			  0  'Back to main menu')
+ACTION_MENU=(	  1  'Start' \
+		  2  'Stop' \
+		  3  'Restart' \
+ 		  4  'Kill' \
+ 		  5  'Info' \
+		  0  'Back to main menu')
+BALANCER_MENU=(	  1  'Disable' \
+		  2  'Enable' \
+ 		  3  'Status' \
+		  0  'Back to main menu')
+CACHE_MENU=(	  1  'Terracotta' \
+                  2  'Infinispan' \
+                  0  'Back to main menu')
+MAINT_MENU=(	  1  'Enable' \
+                  2  'Disable' \
+                  3  'Status' \
+                  0  'Back to main menu')
+if [ $STG ]; then
+	MAIN_MENU=(       1  'Copy war' \
+			  2  'Deploy war' \
+		          3  'Graceful deploy' \
+		          4  'Full deploy' \
+		          5  'Graceful restart' \
+		          6  'Full restart' \
+		          7  'Graceful stop' \
+		          8  'Full stop' \
+		          9  'Graceful start' \
+		          10 'Full start' \
+		          11 'JBoss management' \
+		          12 'Cache management' \
+			  13 'Balancer management' \
+		          14 'Clean temp' \
+		          0  'Exit')
+else
+	MAIN_MENU=(       1  'Copy war' \
+			  2  'Deploy war' \
+		          3  'Graceful deploy' \
+		          4  'Full deploy' \
+		          5  'Graceful restart' \
+		          6  'Full restart' \
+		          7  'Graceful stop' \
+		          8  'Full stop' \
+		          9  'Graceful start' \
+		          10 'Full start' \
+		          11 'JBoss management' \
+		          12 'Cache management' \
+			  13 'Balancer management' \
+		          14 'Maintenance page management' \
+		          15 'JON Agent management' \
+		          16 'JON Server management' \
+		          17 'Clean temp' \
+		          0  'Exit')
+fi
+
+MAIL_MENU=(	  1  ${MAIL_REPORT[0]} \
+                  2  ${MAIL_REPORT[1]} \
+                  3  ${MAIL_REPORT[2]} \
+                  0  'Back to main menu')

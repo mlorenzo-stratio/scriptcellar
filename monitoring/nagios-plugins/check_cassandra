@@ -1,0 +1,673 @@
+#!/bin/bash
+
+# TODO:
+# - Add HintedHandoff
+# - Add cfstats over a specific column
+# - Check http://www.pythian.com/blog/guide-to-cassandra-thread-pools/
+# 
+
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+
+function help(){
+cat << EOM
+Usage: check_cassandra [-H <host>] [-p <JMX_port>] -s <statistic>
+
+Statistics:
+    read_latency:                   Average read latency
+    write_latency:                  Average write latency
+    timedout_connections:           Number of total timeout connections
+    mutation_tasks:                 Mutation tasks statuses
+    read_tasks:                     Read tasks statuses
+    pending:                        Number of pending tasks
+    exceptions:                     Exceptions rate
+    heap_status:                    Heap Memory and Load status
+    key_cache:                      Key cache status
+    row_cache:                      Row cache status
+    counter_cache:                  Counter cache status
+    gc_stats:                       GC Statistics
+    cluster:                        Cluster status
+    connections:                    Concurrent connections
+EOM
+}
+
+UNKNOWN=3
+CRITICAL=2
+WARNING=1
+OK=0
+
+# Get options
+while getopts "H:p:s:w:c:h" option; do
+   case $option in
+      H)      HOST=$OPTARG ;;
+      p)      JMXPORT=$OPTARG ;;
+      s)      STAT=$OPTARG ;;
+      w)      WARN=$OPTARG ;;
+      c)      CRIT=$OPTARG ;;
+      h|\?)   help ; exit 0 ;;
+      *)      help ; exit $UNKNOWN ;;
+   esac
+done
+
+# VARIABLES
+HOST=${HOST:-"0.0.0.0"}
+JMXPORT=${JMXPORT:-"7199"}
+BC_CMD=${BC_CMD:-"$(which bc)"}
+JMXTERM=${JMXTERM:-"$DIR/jmxterm.jar"}
+NODETOOL=${NODETOOL:-"/opt/cassandra/bin/nodetool"}
+JMXCMD="java -jar ${JMXTERM} -n -v silent -l ${HOST}:${JMXPORT}"
+MSGHEADER="Cassandra:"
+
+# THRESHOLD DATA, VARIABLES & MESSAGES
+declare -A DATA=(
+    # THRESHOLDS
+    ["read_latency_OK"]='< 2'
+    ["read_latency_WARN"]='>= 2'
+    ["read_latency_CRIT"]='>= 4'
+
+    ["write_latency_OK"]='< 4'
+    ["write_latency_WARN"]='>= 4'
+    ["write_latency_CRIT"]='>= 6'
+
+    ["timedout_connections_OK"]='== 0'
+    ["timedout_connections_WARN"]='>=1'
+    ["timedout_connections_CRIT"]='>=2'
+
+    ["mutation_tasks_OK"]='< 20'
+    ["mutation_tasks_WARN"]='>= 20'
+    ["mutation_tasks_CRIT"]='>= 30'
+    ["mutation_tasks_ALT_OK"]=' == 0'
+    ["mutation_tasks_ALT_WARN"]=' >= 1'
+    ["mutation_tasks_ALT_CRIT"]=' >= 2'
+
+    ["read_tasks_OK"]='< 20'
+    ["read_tasks_WARN"]='>= 20'
+    ["read_tasks_CRIT"]='>= 30'
+    ["read_tasks_ALT_OK"]=' == 0'
+    ["read_tasks_ALT_WARN"]=' >= 1'
+    ["read_tasks_ALT_CRIT"]=' >= 2'
+
+    ["exceptions_OK"]='== 0'
+    ["exceptions_WARN"]='>= 1'
+    ["exceptions_CRIT"]='>= 5'
+
+    ["connections_OK"]='< 100'
+    ["connections_WARN"]='>= 100'
+    ["connections_CRIT"]='>= 150'
+
+    ["pending_OK"]='< 40'
+    ["pending_WARN"]='>= 40'
+    ["pending_CRIT"]='>= 50'
+
+    ["heap_status_OK"]='< 0.80'       # < 80%
+    ["heap_status_WARN"]='>= 0.80'    # >= 80%
+    ["heap_status_CRIT"]='>= 0.90'    # >= 90%
+
+    ["key_cache_OK"]='< 0.70'         # < 70%
+    ["key_cache_WARN"]='>= 0.70'      # >= 70%
+    ["key_cache_CRIT"]='>= 0.80'      # >= 80%
+
+    ["row_cache_OK"]='< 0.70'         # < 70%
+    ["row_cache_WARN"]='>= 0.70'      # >= 70%
+    ["row_cache_CRIT"]='>= 0.80'      # >= 80%
+
+    ["counter_cache_OK"]='< 0.70'     # < 70%
+    ["counter_cache_WARN"]='>= 0.70'  # >= 70%
+    ["counter_cache_CRIT"]='>= 0.80'  # >= 80%
+
+    ["gc_stats_OK"]='< 200'
+    ["gc_stats_WARN"]='>= 200'
+    ["gc_stats_CRIT"]='> 250'
+
+    ["cluster_OK"]='== 1'       # If 100% of nodes are up
+    ["cluster_WARN"]='< 1'      # If less than 100% of nodes are up
+    ["cluster_CRIT"]='< 0.7'    # If less than 70% of nodes are up (66% => 2/3)
+
+    # STATISTICS & QUERIES
+    ["read_latency_MSG"]='Read latency'
+    ["read_latency_QUERY"]='domain org.apache.cassandra.metrics\nbean type=ClientRequest,name=Latency,scope=Read'
+    ["read_latency_STAT"]='LatencyUnit RateUnit 75thPercentile 95thPercentile' # Desired stats
+    ["read_latency_SHOW"]='95thPercentile' # Stat to show on output (not referring to perfdata)
+    ["read_latency_SHOW_UNIT"]='yes'
+    ["read_latency_UNIT"]='75thPercentile=ms
+                           95thPercentile=ms'
+    ["read_latency_TRANS"]='FiveMinuteRate=CallsPerSecond
+                            75thPercentile=Latency_75th_pcnt
+                            95thPercentile=Latency_95th_pcnt'
+
+    ["write_latency_MSG"]='Write latency'
+    ["write_latency_QUERY"]='domain org.apache.cassandra.metrics\nbean type=ClientRequest,name=Latency,scope=Write'
+    ["write_latency_STAT"]='LatencyUnit RateUnit 75thPercentile 95thPercentile' # Desired stats
+    ["write_latency_SHOW"]='95thPercentile' # Stat to show on output (not referring to perfdata)
+    ["write_latency_SHOW_UNIT"]='yes'
+    ["write_latency_UNIT"]='75thPercentile=ms
+                            95thPercentile=ms'
+    ["write_latency_TRANS"]='FiveMinuteRate=CallsPerSecond
+                             75thPercentile=Latency_75th_pcnt
+                             95thPercentile=Latency_95th_pcnt'
+
+    ["timedout_connections_MSG"]='Timed out connections'
+    ["timedout_connections_QUERY"]='domain org.apache.cassandra.metrics\nbean type=Connection,name=TotalTimeouts'
+    ["timedout_connections_STAT"]='RateUnit FiveMinuteRate' # Desired stats
+    ["timedout_connections_SHOW"]='FiveMinuteRate' # Stat to show on output (not referring to perfdata)
+    ["timedout_connections_TRANS"]='FiveMinuteRate=TimedOutPerSec'
+
+    ["mutation_tasks_MSG"]='Write tasks'
+    ["mutation_tasks_QUERY"]='domain org.apache.cassandra.request\nbean type=MutationStage'
+    ["mutation_tasks_STAT"]='CompletedTasks ActiveCount PendingTasks CurrentlyBlockedTasks' # Desired stats
+    ["mutation_tasks_SHOW"]='PendingTasks' # Stat to show on output (not referring to perfdata)
+    ["mutation_tasks_ALT_SHOW"]='CurrentlyBlockedTasks' # Stat to show on output (not referring to perfdata)
+    ["mutation_tasks_UNIT"]='CompletedTasks=c'
+    ["mutation_tasks_TRANS"]='CompletedTasks=Completed
+                              ActiveCount=Active
+                              PendingTasks=Pending
+                              CurrentlyBlockedTasks=Blocked'
+
+    ["read_tasks_MSG"]='Read tasks'
+    ["read_tasks_QUERY"]='domain org.apache.cassandra.request\nbean type=ReadStage'
+    ["read_tasks_STAT"]='CompletedTasks ActiveCount PendingTasks CurrentlyBlockedTasks' # Desired stats
+    ["read_tasks_SHOW"]='PendingTasks' # Stat to show on output (not referring to perfdata)
+    ["read_tasks_ALT_SHOW"]='CurrentlyBlockedTasks' # Stat to show on output (not referring to perfdata)
+    ["read_tasks_UNIT"]='CompletedTasks=c'
+    ["read_tasks_TRANS"]='CompletedTasks=Completed
+                          ActiveCount=Active
+                          PendingTasks=Pending
+                          CurrentlyBlockedTasks=Blocked'
+
+    ["exceptions_MSG"]='Exceptions'
+    ["exceptions_QUERY"]='domain org.apache.cassandra.metrics\nbean type=Storage,name=Exceptions'
+    ["exceptions_STAT"]='Count'
+    ["exceptions_UNIT"]='Count=c'
+
+    ["connections_MSG"]='Concurrent connections'
+    ["connections_QUERY"]='domain org.apache.cassandra.metrics\nbean type=Client,name=connectedThriftClients'
+    ["connections_STAT"]='Value'
+    ["connections_TRANS"]='Value=connections'
+
+    ["pending_MSG"]='Pending tasks'
+
+    ["heap_status_MSG"]='Heap memory & Load Status'
+
+    ["key_cache_MSG"]='Key cache'
+
+    ["row_cache_MSG"]='Row cache'
+
+    ["counter_cache_MSG"]='Counter cache'
+
+    ["gc_stats_MSG"]='GC stats'
+    ["gc_stats_STAT"]='interval max_gc_elapsed total_gc_elapsed stdev_gc_elapsed gc_reclaimed collections'
+    ["gc_stats_SHOW"]='total_gc_elapsed' # Stat to show on output (not referring to perfdata)
+    ["gc_stats_SHOW_UNIT"]='yes'
+    ["gc_stats_UNIT"]='interval=ms
+                       total_gc_elapsed=ms
+                       max_gc_elapsed=ms
+                       stdev_gc_elapsed=ms
+                       gc_reclaimed=B'
+    ["gc_stats_TRANS"]='total_gc_elapsed=TotalGCTime
+                        max_gc_elapsed=MaxGCTime
+                        stdev_gc_elapsed=StDevGCTime
+                        gc_reclaimed=GCReclaimed
+                        collections=Collections'
+
+    ["cluster_MSG"]='Cluster status'
+)
+
+# Function to compare thresholds
+function cmp(){
+    local args="$*"
+    # Discard float numbers with a definition of exponent above -10
+    if [[ "$1" =~ ^.*E-[1-9]{1}[0-9]{1}[0-9]*$ ]]; then
+        args="0 $2"
+    fi
+    exit_value="$(echo "$args" | BC )"
+    if [ "$exit_value" = 1 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Echo to STDERR
+function echo_err(){
+    local msg=$*
+    echo -e "$msg" >&2
+}
+
+# Function to capture syntax errors from bc
+function BC(){
+    local output 
+    #if read -t 0; then
+        output=$(cat | $BC_CMD 2> "$stderr")
+    #else
+    #    exit $UNKNOWN
+    #fi
+    if grep -q "syntax error" "$stderr"; then
+        echo_err "bc: syntax error"
+        exit $UNKNOWN
+    fi
+    echo "$output"
+}
+
+# Rebuild hash stored in hash
+function rebuildHash(){
+    local hashName=$1
+    shift
+    local args=$*
+    if [ ! "$args" ]; then return ; fi
+    echo "$args" |tr -t ' ' '\n' > "$aux"
+    while IFS=$'=' read key value; do
+        eval "$hashName[$key]=$value"
+    done<"$aux"
+}
+
+# Function to convert to seconds given the unit of measure (rate(calls/s))
+function toSeconds(){
+    local size=$1
+    local unit=$2
+    # Discard float numbers with a definition of exponent above -19
+    if [[ "$1" =~ ^.*E-[1-9]{1}[0-9]{1}[0-9]*$ ]]; then
+        size="0"
+    fi
+    case "$unit" in
+        seconds|SECONDS)            factor="*1" ;;
+        milliseconds|MILLISECONDS)  factor="*1000" ;;
+        microseconds|MICROSECONDS)  factor="*1000000" ;;
+    esac
+    echo "scale=2;$size$factor" | BC | sed -e "s/^\./0./"
+}
+
+# Function to convert to milliseconds given the unit of measure (latency(ms))
+function toMilliseconds(){
+    local size=$1
+    local unit=$2
+    # Discard float numbers with a definition of exponent above -19
+    if [[ "$1" =~ ^.*E-[1-9]{1}[0-9]{1}[0-9]*$ ]]; then
+        size="0"
+    fi
+    case "$unit" in
+        seconds|SECONDS)            factor="*1000" ;;
+        milliseconds|MILLISECONDS)  factor="*1" ;;
+        microseconds|MICROSECONDS)  factor="/1000" ;;
+    esac
+    echo "scale=2;$size$factor" | BC | sed -e "s/^\./0./"
+}
+
+# Function to convert to bytes given the unit of the measure
+function toBytes(){
+    local size=$1
+    local unit=$2
+    case "$unit" in
+        B|b|bytes|Bytes|BYTES)      factor="1" ;;
+        KB|Kb|kb|KBytes|kbytes)     factor="1024" ;;
+        MB|Mb|mb)                   factor="1024*1024" ;;
+        GB|Gb|gb)                   factor="1024*1024*1024" ;;
+        TB|Tb|tb)                   factor="1024*1024*1024*1024" ;;
+    esac
+    echo "scale=2;$size*$factor" | BC | sed -e "s/^\./0./"
+}
+
+# Extracts and processes gc_stats values
+function extractGCStatsValues(){
+    local tmp="$1"
+    nodetoolQuery gc_stats > "$tmp"
+    declare -A values
+    local stat_array=( $stat )
+    local i=0
+    while read value; do
+        # interval max_gc_elapsed total_gc_elapsed stdev_gc_elapsed gc_reclaimed collections
+        values[${stat_array[$i]}]=$value
+        let i=i+1
+    done < "$tmp"
+
+    for key in $stat; do
+        # Get Key and value
+        statKey=${translate[$key]}
+        if [ "$key" = "gc_reclaimed" ]; then
+            values["$key"]=$(toBytes "${values[$key]}" "B")
+        fi
+        value=${values[$key]}
+        if [ "$value" = "NaN" ]; then
+            continue
+        fi
+        # Build output perfdata
+        output="$output ${statKey:-"$key"}=$value${unit[$key]};"
+        if [ ! "$done" ]; then
+            output=${output// /}
+            done="yes"
+        fi
+        if [ "$key" = "$showStat" ]; then
+            statValue="$value"
+            statOutput="${statKey:-"$showStat"}: $statValue"
+            if [ "$showUnit" ]; then
+                statOutput="$statOutput${unit[$key]}"
+            fi
+            # Append warning & critical threshold for performance data
+            warning=$(echo "$THRESHOLD_WARN" | cut -d' ' -f2)
+            critical=$(echo "$THRESHOLD_CRIT" | cut -d' ' -f2)
+            output="$output$warning;$critical;;"
+        fi
+    done
+}
+
+# Extracts and processes Heap Status variables
+function extractHeapStatusValues(){
+    local tmp="$1"
+    nodetoolQuery heap_status > "$tmp"
+    while IFS=$'=' read key value ; do
+        case $key in
+            ID)                         ID="$value" ;;
+            Load)                       LOAD=$(echo "$value" | cut -d ' ' -f1 | tr -t ',' '.')
+                                        UNIT=$(echo "$value" | cut -d ' ' -f2)
+                                        LOADBYTES=$(toBytes "$LOAD" "$UNIT") ;;
+            Heap\ Memory\ \(MB\))       HEAPMEM="$value"
+                                        HEAP_USED=$(echo "$HEAPMEM" | cut -d '/' -f1 | tr -d ' ' | tr -t ',' '.')
+                                        HEAP_TOTAL=$(echo "$HEAPMEM" | cut -d '/' -f2 | tr -d ' ' | tr -t ',' '.')
+                                        HEAP_USED_BYTES=$(toBytes "$(echo "$HEAPMEM" | cut -d '/' -f1 | tr -t ',' '.')" "MB")
+                                        HEAP_TOTAL_BYTES=$(toBytes "$(echo "$HEAPMEM" | cut -d '/' -f2 | tr -t ',' '.')" "MB")
+                                        PCT_USED=$(echo scale=2\;"$HEAP_USED/$HEAP_TOTAL"*100 | BC)
+                                        warning=$(echo "$THRESHOLD_WARN" | cut -d' ' -f2)
+                                        critical=$(echo "$THRESHOLD_CRIT" | cut -d' ' -f2)
+                                        HEAP_WARNING=$(echo "$HEAP_TOTAL_BYTES"*"$warning" | BC)
+                                        HEAP_CRITICAL=$(echo "$HEAP_TOTAL_BYTES"*"$critical" | BC) ;;
+                *)                      continue ;;
+        esac
+    done < "$tmp"
+
+    statValue=$(echo "$PCT_USED"/100 | BC)
+    statOutput="ID:$ID, Heap Memory: $PCT_USED% of $HEAP_TOTAL MB, Load: $LOAD MB"
+    output="HeapMem=${HEAP_USED_BYTES}B;$HEAP_WARNING;$HEAP_CRITICAL;0;$HEAP_TOTAL_BYTES Load=${LOADBYTES}B;"
+}
+
+# Function to extract all keys and values from nodetool caches info
+function extractCacheValues(){
+    checkBin nodetool
+    local stat=$1
+    shift
+    local message=$*
+    nodetoolQuery "$stat" > "$aux"
+    while IFS=$'=' read key value; do
+        case "$key" in
+            entries)            ENTRIES="$value" ;;
+            size)               SIZE=$(echo "$value" | cut -d ' ' -f1 | tr -t ',' '.')
+                                UNIT=$(echo "$value" | cut -d ' ' -f2)
+                                SIZE_BYTES=$(toBytes "$SIZE" "$UNIT") ;;
+            capacity)           CAPACITY=$(echo "$value" | cut -d ' ' -f1 | tr -t ',' '.')
+                                UNIT=$(echo "$value" | cut -d ' ' -f2)
+                                PCT_USED=0
+                                if [[ ! ${CAPACITY} =~ ^0$ ]]; then
+                                    PCT_USED=$(echo scale=2\;"$SIZE/$CAPACITY"*100 | BC)
+                                fi
+                                CAPACITY_BYTES=$(toBytes "$CAPACITY" "$UNIT")
+                                warning=$(echo "$THRESHOLD_WARN" | cut -d' ' -f2)
+                                critical=$(echo "$THRESHOLD_CRIT" | cut -d' ' -f2)
+                                SIZE_WARNING=$(echo "$CAPACITY_BYTES"*"$warning" | BC)
+                                SIZE_CRITICAL=$(echo "$CAPACITY_BYTES"*"$critical" | BC)
+                                ;;
+            hits)               HITS="$value" ;;
+            requests)           REQUESTS="$value" ;;
+            recent_hit_rate)    if [[ ! "$value" =~ ^NaN$ ]]; then
+                                    value=${value/,/.}
+                                    RECENT_HIT_RATE=" Recent hit rate: $value,"
+                                    RECENT_HIT_RATE_PERF=" RecentHitRate=$value;"
+                                else
+                                    :
+                                fi ;;
+            save_period)        SAVEPERIOD="$value" ;;
+        esac
+    done < "$aux"
+    statValue=$(echo "$PCT_USED"/100 | BC)
+    statOutput="Entries: $ENTRIES, Capacity: $PCT_USED% of $CAPACITY MB, Hits: $HITS, Requests: $REQUESTS,${RECENT_HIT_RATE} Save period: $SAVEPERIOD"
+    output="Entries=$ENTRIES; Capacity=${SIZE_BYTES}B;$SIZE_WARNING;$SIZE_CRITICAL;0;$CAPACITY_BYTES Hits=${HITS}c; Requests=${REQUESTS}c;${RECENT_HIT_RATE_PERF} SavePeriod=$SAVEPERIOD;"
+}
+
+# Function to process JMX queries
+function extractJMXQueries(){
+    local tmp="$1"
+    for attribute in "${stat[@]}"; do
+        query2="${query2}get ${attribute}\n"
+    done
+    query="$query\n$query2"
+
+    echo -e "$query" > "$tmp"
+
+    # Run the query against the Cassamdra JMX port
+    output=$($JMXCMD -i "$tmp" 2> "$stderr" | tr -t '\n' ' ' | sed -e "s/ = /=/g" 2>/dev/null | tr -s ' ')
+
+    # Manage stderr in case any error occurs (java doesn't care about exit status)
+    if  [ -s "$stderr" ]; then
+        echo "$MSGHEADER Error connecting to $HOST"
+        exit $UNKNOWN
+    fi
+
+    # Extract data to show on plugin output and add its unit to each metric
+    echo "$output" | sed -e "s/ /\n/g" -e "s/;//g" | grep . > "$tmp"
+    unset output
+    while IFS=$'= ' read key value; do
+        case "$key" in
+            RateUnit)       RATE_UNIT="$value" ; continue ;;
+            LatencyUnit)    LATENCY_UNIT="$value" ; continue ;;
+            *thPercentile)  value=$(toMilliseconds "$value" "$LATENCY_UNIT") ;;
+            *MinuteRate)    value=$(toSeconds "$value" "$RATE_UNIT") ;;
+        esac
+        statKey=${translate[$key]}
+        # Build output message
+        if [[ "$key" =~ ^$showStat$ ]]; then
+            statValue="$value"
+            statOutput="${statKey:-"$key"}: $value"
+            if [ "$showUnit" ]; then
+                statOutput="$statOutput${unit[$key]}"
+            fi
+        fi
+        # Build output message
+        if [[ "$key" =~ ^$showAltStat$ ]]; then
+            statAltValue="$value"
+            statOutput="$statOutput, ${statKey:-"$key"}: $value"
+            if [ "$showUnit" ]; then
+                statOutput="$statOutput${unit[$key]}"
+            fi
+        fi
+        # Build output perfdata
+        output="$output ${statKey:-"$key"}=$value${unit[$key]};"
+        if [ ! "$done" ]; then
+            output=${output// /}
+            done="yes"
+        fi
+    done < "$tmp"
+}
+
+# Extract clustere status values
+function extractClusterStatus(){
+    local tmp="$1"
+    nodetoolQuery cluster > "$tmp"
+    local total up down normal leaving joining moving
+    total=0
+    up=0
+    down=0
+    normal=0
+    leaving=0
+    joining=0
+    moving=0
+    while IFS=$'|' read status state; do
+        let total=total+1
+        case "$status" in
+            D) let down=down+1 ;;
+            U) let up=up+1 ;;
+        esac
+        case "$state" in
+            N) let normal=normal+1 ;;
+            L) let leaving=leaving+1 ;;
+            J) let joining=joining+1 ;;
+            M) let moving=moving+1 ;;
+        esac
+    done<"$tmp"
+    rm -f "$tmp"
+
+    statOutput="Nodes up: $up/$total"
+    statValue=$(echo $up/$total | BC)
+    output="up=$up; down=$down; normal=$normal; leaving=$leaving; joining=$joining; moving=$moving;"
+}
+
+# Check for binaries
+function checkBin(){
+    local tool=$1
+    case "$tool" in
+        nodetool)
+            if [ ! -x "$NODETOOL" ]; then
+                echo "\`nodetool\` command is missing. Plugin needs \`nodetool\` binary to work."
+                exit $UNKNOWN
+            fi ;;
+        jmxterm)
+            if [ ! -r "$JMXTERM" ]; then
+                echo "\`jmxterm\` JAR is missing. Plugin needs \`jmxterm\` JAR to work."
+                help
+                exit $UNKNOWN
+            fi ;;
+    esac
+}
+
+# Run nodetool query according to the desired statistic
+function nodetoolQuery(){
+    local stat=$1
+    case $stat in
+        pending)
+            $NODETOOL tpstats 2>&- | awk '{ if (NR>1 && NR <19) ;} { sum+=$3 } END {print sum}'
+        ;;
+        heap_status)
+            $NODETOOL info 2>&- | sed -e "s/[ ]*: /=/"
+        ;;
+        key_cache|row_cache|counter_cache)
+            $NODETOOL info 2>&- | grep -i "$message" | sed -e "s/^[^:]*: //" -e "s/^[a-z]\+ \([a-zA-Z0-9,.]\+\), [a-z]\+ \([a-zA-Z0-9,.]* [a-zA-Z]\+\), [a-z]\+ \([a-zA-Z0-9,.]\+ [a-zA-Z]\+\), \([a-zA-Z0-9,.]\+\) [a-z]\+, \([a-zA-Z0-9,.]\+\) [a-z]\+, \([a-zA-Z0-9,.]\+\) [a-z]\+ [a-z]\+ [a-z]\+, \([a-zA-Z0-9,.]\+\) [a-z]\+ [a-z]\+ [a-z]\+ [a-z]\+/entries=\1\nsize=\2\ncapacity=\3\nhits=\4\nrequests=\5\nrecent_hit_rate=\6\nsave_period=\7/"
+        ;;
+        gc_stats)
+            $NODETOOL gcstats 2>&- | grep . | tail -1 | tr -s ' ' | tr -t ' ' '\n' | grep .
+        ;;
+        cluster)
+            $NODETOOL status 2>&- | grep -E "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+" | sed -e "s/^\([A-Z]\{1\}\)\([A-Z]\{1\}\).*/\1|\2/"
+        ;;
+    esac
+}
+
+
+# Remove global temp files upon exit
+function cleanup(){
+    rm -f "$tmp" "$stderr" "$aux" # Remove temp files
+}
+trap cleanup 0 # that's why there's no local temp files ;)
+
+# Define trap function to execute a method upon error on failure and exit
+function error(){
+    local parent_lineno="$1"
+    local message="$2"
+    local code="${3:-$UNKNOWN}"
+    local funcname="${4}"
+    if [ ! -z "$funcname" ]; then
+        funcname="on function $funcname or "
+    fi
+    if [[ -n "$message" ]] ; then
+        echo "Error ${funcname}near line ${parent_lineno}: ${message}; exiting with status ${code}"
+    else
+        echo "Error ${funcname}near line ${parent_lineno}; exiting with status ${code}"
+    fi
+    exit "${code}"
+}
+trap 'error ${LINENO} ${FUNCNAME}' ERR
+
+############################ MAIN START ############################
+
+if ! (echo > /dev/tcp/"$HOST"/"$JMXPORT") >/dev/null 2>&1; then
+    echo "$MSGHEADER $HOST:$JMXPORT is down!"
+    exit $CRITICAL
+fi
+
+if [ ! -x "$BC_CMD" ]; then
+    echo "\`bc\` command is missing. Plugin needs \`bc\` package to work."
+    exit $UNKNOWN
+fi
+
+if [ -z "$STAT" ]; then
+    echo "Statistic is mandatory"
+    help
+    exit $UNKNOWN
+fi
+
+tmp=$(mktemp -p /dev/shm)
+stderr=$(mktemp -p /dev/shm)
+aux=$(mktemp -p /dev/shm)
+declare -A unit translate
+message=${DATA[${STAT}_MSG]}                    # Output header
+query=${DATA[${STAT}_QUERY]}                    # Query to issue
+stat=${DATA[${STAT}_STAT]}                      # Stat to retrieve
+showStat=${DATA[${STAT}_SHOW]}                  # Stat to be shown on output (not perfdata)
+showAltStat=${DATA[${STAT}_ALT_SHOW]}                  # Stat to be shown on output (not perfdata)
+showUnit=${DATA[${STAT}_SHOW_UNIT]}             # Show unit for statOutput
+rebuildHash unit ${DATA[${STAT}_UNIT]}          # Units for stats
+rebuildHash translate ${DATA[${STAT}_TRANS]}    # Units for translations
+# Set thresholds, messages, stats and queries for stat $STAT
+THRESHOLD_OK=${DATA[${STAT}_OK]}                # OK threshold
+THRESHOLD_WARN=${DATA[${STAT}_WARN]}            # WARN threshold
+THRESHOLD_CRIT=${DATA[${STAT}_CRIT]}            # CRIT threshold
+THRESHOLD_ALT_OK=${DATA[${STAT}_ALT_OK]}        # Alternate OK threshold
+THRESHOLD_ALT_WARN=${DATA[${STAT}_ALT_WARN]}    # Alternate WARN threshold
+THRESHOLD_ALT_CRIT=${DATA[${STAT}_ALT_CRIT]}    # Alternate CRIT threshold
+
+# Override default warning & critical threshold values
+if [ "$WARN" ]; then
+    THRESHOLD_WARN="$(echo $THRESHOLD_WARN | cut -d ' ' -f1) $WARN"
+fi
+if [ "$CRIT" ]; then
+    THRESHOLD_CRIT="$(echo $THRESHOLD_CRIT | cut -d ' ' -f1) $CRIT"
+fi
+
+# Default showStat value
+if [ ! "$showStat" ]; then
+    showStat=${stat[*]}
+fi
+case $STAT in
+    read_latency|write_latency|timedout_connections|mutation_tasks|read_tasks|exceptions|connections)
+        checkBin jmxterm
+        extractJMXQueries "$tmp"
+    ;;
+    pending)
+        checkBin nodetool
+        nodetoolQuery pending > "$tmp"
+        statValue=$(cat "$tmp")
+        message="$message: $statValue"
+        output="PendingTasks=$statValue;"
+    ;;
+    heap_status)
+        checkBin nodetool
+        extractHeapStatusValues "$tmp"
+    ;;
+    key_cache|row_cache|counter_cache)
+        checkBin nodetool
+        extractCacheValues "$STAT" "$message"
+    ;;
+    gc_stats)
+        checkBin nodetool
+        extractGCStatsValues "$tmp"
+    ;;
+    cluster)
+        checkBin nodetool
+        extractClusterStatus "$tmp"
+    ;;
+    *)
+        help ; exit $UNKNOWN
+    ;;        
+esac
+
+# Fill $exit_status according to values and thresholds
+if cmp "$statValue" "$THRESHOLD_CRIT" || ( [ ! -z "$showAltStat" ] && cmp "$statAltValue" "$THRESHOLD_ALT_CRIT" );then
+    message="$message CRITICAL"
+    exit_status=$CRITICAL
+elif cmp "$statValue" "$THRESHOLD_WARN" || ( [ ! -z "$showAltStat" ] && cmp "$statAltValue" "$THRESHOLD_ALT_WARN" ); then
+    message="$message WARNING"
+    exit_status=$WARNING
+elif cmp "$statValue" "$THRESHOLD_OK" && ( [ ! -z "$showAltStat" ] &&  cmp "$statAltValue" "$THRESHOLD_ALT_OK" ); then
+    message="$message OK"
+    exit_status=$OK
+fi
+
+# Print service information and performance data
+echo "$MSGHEADER $message $statOutput | $output"
+
+# Exit and return a value according to defined thresholds
+exit $exit_status

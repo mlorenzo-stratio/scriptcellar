@@ -1,0 +1,9 @@
+#!/bin/bash
+
+MYDIR=$(dirname $0)
+
+if [ $# = 0 ]; then
+	$MYDIR/rumboctl_wizard
+else
+	$MYDIR/rumboctl_cmd $*
+fi

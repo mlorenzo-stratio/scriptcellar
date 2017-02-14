@@ -1,0 +1,89 @@
+#!/bin/bash
+
+DB=${1,,}
+DISK=$2
+WARNING_PCT=$3
+CRITICAL_PCT=$4
+
+TMP=$(mktemp)
+
+PMON=""
+
+if [ $DB = "front" ]; then
+        PMON="RUMPRD"
+elif [ $DB = "back" ]; then
+        PMON="prdrbo"
+else
+        PMON="BMSPRD"
+fi
+
+
+has_pmon(){
+	if ps -fe | grep -v grep | grep -E "ora_pmon_$PMON" -q ; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+HOST="$(echo $HOSTNAME | cut -d '.' -f1)"
+
+if has_pmon ; then
+        sudo -u oracle /usr/local/nagios/libexec/check_asm $DB $DISK 2>&1 > $TMP
+	if [ $? != 0 ] || [ ! -s "$TMP" ]; then
+                echo "ASM ($HOST) Disk - Error checking $DISK: $(cat $TMP | tr -t '\n' ' ')"
+                echo "ASM ($HOST) Disk - Error checking $DISK: $(cat $TMP | tr -t '\n' ' ')" >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+		rm $TMP
+                exit 2
+        fi
+else
+        if [ "$HOST" = "madup01" ]; then
+                HOST="madup02"
+        else
+                HOST="madup01"
+        fi
+	echo "=======================BEGIN: $(date)===========================" >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+	echo "1.1 SSH TO $HOST" >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+        ssh $HOST sudo -u oracle /usr/local/nagios/libexec/check_asm $DB $DISK 2>&1 > $TMP
+	if [ $? != 0 ] || [ ! -s "$TMP" ]; then
+		echo "1.2 SSH TO $HOST" >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+                echo "ASM ($HOST) Disk - Error checking $DISK: $(cat $TMP | tr -t '\n' ' ')"
+                echo "ASM ($HOST) Disk - Error checking $DISK: $(cat $TMP | tr -t '\n' ' ')" >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+		echo -n "ssh $HOST uptime " >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+		ssh $HOST uptime 2>&1 >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+		rm $TMP
+                exit 2
+        fi
+	echo "1.3 SSH TO $HOST: $(cat $TMP | tr -t '\n' ' ')" >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+	echo "=======================END: $(date)===========================" >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+	echo >> /tmp/_check_asmdisk_error_log.$DB.$DISK
+fi
+
+DISK_SIZE=$(echo "scale=3; $(cat $TMP | awk '{print $4}') * 1024" | bc)
+FREE=$(echo "scale=3; $(cat $TMP | awk '{print $5}') * 1024" | bc)
+USED=$(expr $DISK_SIZE - $FREE)
+
+WARNING=$(echo "$DISK_SIZE * $WARNING_PCT / 100" | bc)
+CRITICAL=$(echo "$DISK_SIZE * $CRITICAL_PCT / 100" | bc)
+
+if [ $USED -lt $WARNING ]; then
+        TEXT="ASM ($HOST) Disk OK - $DISK TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB ($(echo "scale=3; $FREE * 100 / $DISK_SIZE" | bc)%)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+	rm $TMP
+        exit 0
+fi
+if [ $USED -ge $WARNING ] && [ $USED -lt $CRITICAL ]; then
+        TEXT="ASM ($HOST) Disk WARNING - $DISK TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB ($(echo "scale=3; $FREE * 100 / $DISK_SIZE" | bc)%)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+	rm $TMP
+        exit 1
+fi
+if [ $USED -ge $CRITICAL ]; then
+        TEXT="ASM ($HOST) Disk CRITICAL - $DISK TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB ($(echo "scale=3; $FREE * 100 / $DISK_SIZE" | bc)%)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+	rm $TMP
+        exit 2
+fi
+
+rm $TMP
+exit 0

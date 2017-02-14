@@ -1,0 +1,99 @@
+#!/bin/bash
+
+#madus31.phoenix_s51_28.beds-search.4352
+#/usr/local/bin/schedule_svc_downtime.sh madup30 "Beds - phoenix_p65_19" "tomorrow 2:00" "tomorrow 2:40"
+
+APP="$1"
+APP=${APP^}
+app=$(echo $1 | tr -t '[[:upper:]]' '[[:lower:]]')
+START_DFLT="tomorrow 6:00"
+END_DFLT="tomorrow 8:30"
+START="${2-$START_DFLT}"
+END="${3-$END_DFLT}"
+
+start=$START
+end=$END
+
+START=$(echo $START | sed -e "s/ /\\\ /g")
+END=$(echo $END | sed -e "s/ /\\\ /g")
+
+APPLIST="/rmb/data/list_app_services"
+
+if [ $# -lt 1 ]; then
+	echo "Usage: $0 <application> [start_time] [end_time]"
+	echo "       [start_time] and [end_time] default to \"tomorrow 6:00\" and \"tomorrow 8:30\""
+	exit 1
+fi
+
+if [ "$app" = "bms" ]; then
+	echo "Scheduling downtime ($start - $end) for application $APP:"
+	ssh -n nagios@madup0715 /localhome/nagios/bin/downtime_host_procion.sh bms "$START" "$END"
+	echo -e "\t- Scheduled downtime for: URL (bms.rumbo.com)"
+	for node in "BMS\ web\ -\ rumbo_bms1_01" "BMS\ bpm\ -\ rumbo_bms1_02" "BMS\ jms\ -\ rumbo_bms1_03" "BMS\ crm\ -\ rumbo_bms1_04"; do
+		host=madup03
+		ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$node" "$START" "$END"
+		node=$(echo $node | sed -e 's/\\//g')
+                echo -e "\t- Scheduled downtime for: ${app^} ($node@$host)"
+	done
+        for node in "BMS\ web\ -\ rumbo_bms2_01" "BMS\ jms\ -\ rumbo_bms2_03" "BMS\ crm\ -\ rumbo_bms2_04"; do
+                host=madup04
+                ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$node" "$START" "$END"
+		node=$(echo $node | sed -e 's/\\//g')
+                echo -e "\t- Scheduled downtime for: ${app^} ($node@$host)"
+        done
+	exit
+fi
+
+if [ "$app" = "foservice" ] || [ "$app" = "commonservice" ]; then
+	app="commonservice-foservice-seoservice"
+fi
+
+echo "Scheduling downtime ($start - $end) for application $APP:"
+grep -E "^[^.]*\..*[^.]*\.$app\." $APPLIST | while IFS='.' read host node appname memory; do
+	if [[ $host =~ ^madus ]]; then
+		continue
+	fi
+	echo -ne "\t- Scheduled downtime for: "
+	ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$APP\ -\ $node" "$START" "$END"
+	echo "$APP ($node@$host)"
+done 
+
+if [ "$app" = "viajes" ]; then
+	echo -e "madup22,\"JMS Queue - Stats-indexer vuelos\"\nmadup26,\"JMS Queue - Agregador vuelos\"\nmadup27,\"JMS Queue - Indexador vuelos\"" | \
+		while IFS=",\n" read host app ; do
+			echo "Scheduling downtime ($start - $end) for application $app:"
+			echo -ne "\t- Scheduled downtime for: "
+			ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$app" "$START" "$END"
+			echo "${app^} ($node@$host)"
+		done
+
+
+elif [ "$app" = "hotel" ]; then
+	echo -e "madup22,\"JMS Queue - Stats-indexer hoteles\"\nmadup27,\"JMS Queue - Agregador hoteles\"\nmadup27,\"JMS Queue - Indexador hoteles\"" | \
+		while IFS=",\n" read host app ; do
+			echo "Scheduling downtime ($start - $end) for application $app:"
+			echo -ne "\t- Scheduled downtime for: "
+			ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$app" "$START" "$END"
+			echo "${app^} ($node@$host)"
+		done
+
+
+elif [ "$app" = "beds" ]; then
+        echo -e "madup0809,\"Beds Availability\"\nmadup0810,\"Beds Availability\"\nmadup0819,\"Beds Availability\"\nmadup0820,\"Beds Availability\"" | \
+                while IFS=",\n" read host service ; do
+                        echo "Scheduling downtime ($start - $end) for service $service:"
+                        echo -ne "\t- Scheduled downtime for: "
+                        ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$service" "$START" "$END"
+                        echo "${service^} ($host)"
+                done
+
+
+elif [ "$app" = "beds-search" ]; then
+        echo -e "madup0809,\"Beds-search Availability\"\nmadup0810,\"Beds-search Availability\"\nmadup0819,\"Beds-search Availability\"\nmadup0820,\"Beds-search Availability\"" | \
+                while IFS=",\n" read host service ; do
+                        echo "Scheduling downtime ($start - $end) for service $service:"
+                        echo -ne "\t- Scheduled downtime for: "
+                        ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$service" "$START" "$END"
+                        echo "${service^} ($host)"
+                done
+fi

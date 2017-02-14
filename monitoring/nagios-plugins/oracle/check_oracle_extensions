@@ -1,0 +1,51 @@
+#!/bin/bash
+
+DB=$1
+TABLESPACE=$2
+WARNING=$3
+CRITICAL=$4
+
+if [ -z "$TABLESPACE" ]; then
+	echo "No args specified."
+	exit 1
+fi
+
+if [ $DB = "front" ]; then
+        PROFILE="/home/oracle/.bash_FRONTprofile"
+elif [ $DB = "back" ]; then
+        PROFILE="/home/oracle/.bash_profile"
+else
+        PROFILE="/home/oracle/.bash_profileBMS"
+fi
+
+. $PROFILE 2>/dev/null
+
+
+lt(){
+        num1=$1
+        num2=$2
+        if (( $(echo "${num1} < ${num2}" | bc) == 1 )); then
+                return 0;
+        else
+                return 1;
+        fi
+}
+
+TEMP=$(mktemp -p /dev/shm)
+
+sudo -u oracle /usr/local/nagios/libexec/check_oracle_extensions_sql $DB $TABLESPACE > $TEMP
+read free total percentage < $TEMP
+
+if [ ! -s $TEMP ]; then
+	rm -f $TEMP
+	exit 3
+elif lt $free $WARNING; then
+	rm -f $TEMP
+	exit 1
+elif lt $free $CRITICAL; then
+	rm -f $TEMP
+	exit 2
+else
+	rm -f $TEMP
+	exit 0
+fi

@@ -1,0 +1,80 @@
+#!/bin/bash
+
+OK=0
+WARNING=1
+CRITICAL=2
+
+HOST="$1"
+PORT="$2"
+DESC=$(echo $3 | tr -t ' ' '_')
+URL="$4"
+AUTH="$5"
+WARNING_THRESHOLD="$6"
+CRITICAL_THRESHOLD="$7"
+
+MSG="JMS Queue ($HOST:$PORT)"
+# http://madup26:6281/jmx-console/HtmlAdaptor?action=inspectMBean&name=org.apache.activemq:BrokerName%3Dopensearch.flight.queue,Type%3DQueue,Destination%3Dopensearch.flight.queue
+# check_jms madup26.rumbo.prd 6380 "JMS Queue - Agregador vuelos" "jmx-console/HtmlAdaptor?action=inspectMBean&name=org.apache.activemq:BrokerName%3Dopensearch.flight.queue,Type%3DQueue,Destination%3Dopensearch.flight.queue" fparis:Th3cans1n0 100
+
+TMP=$(mktemp -p /dev/shm)
+CACHE="/var/lib/centreon/centplugins/jms_queue_$HOST.$PORT-$DESC"
+
+HOME=/tmp
+lynx -dump "http://$HOST:$PORT/$URL" "-auth=$AUTH" 2>/dev/null > $TMP
+
+if [ $? != 0 ] || ! grep -qE "^JMX MBean View" $TMP ; then
+	echo "$MSG: ERROR!! Unable to connect to remote host"
+	{ echo "#0#"
+	  echo "lynx -dump 'http://$HOST:$PORT/$URL' -auth='$AUTH'"
+	  echo "-1-"
+	  lynx -dump "http://$HOST:$PORT/$URL" "-auth=$AUTH"
+	  echo "#2#"
+	} >> /tmp/$DESC 2>&1
+	rm -fr $TMP
+	exit $CRITICAL
+fi
+ 
+enqueue=$(grep -E "^   Enqueue" $TMP | sed -e "s:^   EnqueueCount long R \([0-9]*\) Number of messages that have been.*$:\1:")
+dequeue=$(grep -E "^   Dequeue" $TMP | sed -e "s:^   DequeueCount long R \([0-9]*\) Number of messages that have been.*$:\1:")
+
+rm -f $TMP
+
+QUEUED=$[ $enqueue - $dequeue ]
+
+LAST=""
+LAST_QUEUED=-1
+
+if [ -e "$CACHE" ]; then
+	LAST=$(cat "$CACHE")
+	if [ "$enqueue" -gt "$LAST" ]; then
+		LAST_QUEUED=$[ $enqueue - $LAST ]
+	elif [ "$enqueue" -eq "$LAST" ]; then
+		LAST_QUEUED=0
+	else
+		MSG="$MSG: (counter reset)"
+		LAST_QUEUED=-1
+	fi
+fi
+
+echo $enqueue > $CACHE
+
+if [ $QUEUED -ge $CRITICAL_THRESHOLD ]; then
+	if [ $LAST_QUEUED = 0 ]; then
+		MSG2="NOT QUEUEING!! "
+	fi	
+	echo "$MSG: CRITICAL!! $MSG2$QUEUED queued messages (threshold:$CRITICAL_THRESHOLD), $LAST_QUEUED processed messages | processed_messages=$LAST_QUEUED queued_messages=$QUEUED"
+	exit $CRITICAL
+elif [ $QUEUED -ge $WARNING_THRESHOLD ]; then
+	if [ $LAST_QUEUED = 0 ]; then
+		echo "$MSG: CRITICAL: NOT QUEUEING!! $QUEUED queued messages (threshold:$WARNING_THRESHOLD), $LAST_QUEUED processed messages | processed_messages=$LAST_QUEUED queued_messages=$QUEUED"
+		exit $CRITICAL
+	fi	
+	echo "$MSG: WARNING!! $QUEUED queued messages (threshold:$WARNING_THRESHOLD), $LAST_QUEUED processed messages | processed_messages=$LAST_QUEUED queued_messages=$QUEUED"
+	exit $WARNING
+elif [ $LAST_QUEUED = 0 ]; then
+	echo "$MSG: CRITICAL!! NOT QUEUEING!! $QUEUED queued messages, $LAST_QUEUED processed messages | processed_messages=$LAST_QUEUED queued_messages=$QUEUED"
+	exit $CRITICAL
+else
+	echo "$MSG: OK, $QUEUED queued messages, $LAST_QUEUED processed messages | processed_messages=$LAST_QUEUED queued_messages=$QUEUED" 
+	exit $OK
+fi

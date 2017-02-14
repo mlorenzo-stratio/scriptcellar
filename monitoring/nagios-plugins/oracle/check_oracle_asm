@@ -1,0 +1,57 @@
+#!/bin/bash
+
+DISK=$1
+WARNING_PCT=$2
+CRITICAL_PCT=$3
+
+TMP=$(mktemp)
+
+export ORACLE_HOME=/u01/app/oracle/product/11.2.0/dbhome_1
+export ORACLE_SID=prdrbo_1
+
+has_pmon(){
+	if ps -fe | grep -v grep | grep -E "ora_pmon_prdrbo" -q ; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+HOST=""
+
+if has_pmon ; then
+	HOST=" (madup01)"
+        sudo -u oracle /usr/local/nagios/libexec/check_asm $DISK > $TMP
+else
+	HOST=" (madup02)"
+        ssh madup02 sudo -u oracle /usr/local/nagios/libexec/check_asm $DISK > $TMP
+fi
+
+DISK_SIZE=`cat $TMP | awk '{print $4}'`
+FREE=`cat $TMP | awk '{print $5}'`
+USED=`expr $DISK_SIZE - $FREE`
+
+WARNING=`expr $DISK_SIZE \* $WARNING_PCT \/ 100`
+CRITICAL=`expr $DISK_SIZE \* $CRITICAL_PCT \/ 100`
+
+if [ $USED -lt $WARNING ]; then
+        TEXT="ASM$HOST Disk usage OK - $FREE MB free"
+        echo $TEXT
+	rm $TMP
+        exit 0
+fi
+if [ $USED -ge $WARNING ] && [ $USED -lt $CRITICAL ]; then
+        TEXT="ASM$HOST DISK USAGE WARNING - $FREE MB free"
+        echo $TEXT
+	rm $TMP
+        exit 1
+fi
+if [ $USED -ge $CRITICAL ]; then
+        TEXT="ASM$HOST DISK USAGE CRITICAL - $FREE MB free"
+        echo $TEXT
+	rm $TMP
+        exit 2
+fi
+
+rm $TMP
+exit 0

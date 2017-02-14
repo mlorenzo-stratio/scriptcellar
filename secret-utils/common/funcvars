@@ -1,0 +1,136 @@
+# define variables
+declare -a mounted_paths
+
+# Run command and prettyfy stdout
+function _run(){
+    local exit_status
+    tmp=$(mktemp -p /dev/shm -t .run.XXXX)
+    eval "$*" > "$tmp"
+    exit_status=$?
+    if [[ $VERBOSE == yes ]]; then
+        while IFS=$'\n' read line; do
+            echo "      > $line"
+        done < "$tmp"
+    fi
+    rm -f "$tmp"
+    return $exit_status
+}
+
+# simplified curl function
+function _curl(){
+    local endpoint="${1#/}" # remove initial '/' if exists
+    local data="$2"
+    # POST, GET, PUT, PATCH, DELETE
+    # http://www.restapitutorial.com/lessons/httpmethods.html
+    local method="${3:-GET}"
+    local mount="$4"
+    if [[ $data ]]; then
+        if [[ "$VERBOSE" = "yes" ]]; then
+            echo -e "url: https://$vault_host:$vault_port/v1/$endpoint\nmethod: $method\ndata:$data"
+        fi
+        if [[ $mount == "mount" ]]; then
+            _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+                          -H 'Content-type: application/json' \
+                          -d \"$data\" \
+                          \"https://$vault_host:$vault_port/v1/$endpoint\""
+        else
+            _run "/usr/bin/curl -fs -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+                          -H 'Content-type: application/json' \
+                          -d \"$data\" \
+                          \"https://$vault_host:$vault_port/v1/$endpoint\""
+        fi
+    else
+        if [[ "$VERBOSE" = "yes" ]]; then
+            echo -e "url: https://$vault_host:$vault_port/v1/$endpoint\nmethod: $method"
+        fi
+        if [[ $mount == "mount" ]]; then
+            _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+                          -H 'Content-type: application/json' \
+                          \"https://$vault_host:$vault_port/v1/$endpoint\""
+        else
+            _run "/usr/bin/curl -sf -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+                          -H 'Content-type: application/json' \
+                          \"https://$vault_host:$vault_port/v1/$endpoint\""
+        fi
+    fi
+}
+
+# mount function
+function _mount(){
+    local url="$1"
+    local data
+    # get full path if relative reference
+    if [[ ! "$url" =~ ^/ ]]; then
+        url="sys/mounts/$url"
+    else
+        url="sys/mounts$url"
+    fi
+    # check if already mounted in this session
+    if [[ ! "${mounted_paths[@]}" =~ $url ]]; then
+        data="{ \\\"type\\\": \\\"generic\\\", \\\"description\\\": \\\"$url secret backend\\\" }"
+        _curl "$url" "$data" "POST" "mount"
+        mounted_paths+=( "$url" )
+    fi
+}
+
+# Function to upload data to Vault
+function envault(){
+    local endpoint="$1"
+    local data="$2"
+    local mountpoint=${endpoint%%/*}
+    # Mount Vault backend (ID=first level of URL)
+    _mount "$mountpoint"
+    _run "echo \"[Vault] $data\""
+    _curl "$endpoint" "$data" "POST"
+}
+
+# Run query on Kerberos server
+function krbquery(){
+    local query="$1"
+    local keep_output="$2"
+    local code
+    if [[ $keep_output ]]; then
+        kadmin -p "$admin_princ" -k -t "$admin_ktab" -s "$kerberos_server" -q "$query" 2>/dev/null
+    else
+        _run "kadmin -p \"$admin_princ\" -k -t \"$admin_ktab\" -s \"$kerberos_server\" -q \"$query\""
+    fi
+    code=$?
+    if [[ $code -ne 0 ]]; then
+        echo "Something went wrong when querying '$query': [code=$code]"
+        echo -e "\nCheck Kerberos client configuration: /etc/krb5.conf"
+        exit 1
+    fi
+}
+
+# Check for given arguments
+function check_arg(){
+    local arg=$1
+    local msg=$2
+    if [[ ! $arg ]]; then
+        echo -e "ERROR! No $msg provided\n"
+        help ; exit 1
+    fi
+}
+
+# Verify access to given files
+function verify(){
+    local list="$*"
+    list="${list// /\\n}"
+    local failed
+    while IFS=$':' read type path ; do
+        if [[ $type = f ]]; then
+            if [[ ! -r $path ]]; then
+                echo "File '$path' is not readable or does not exist!"
+                failed=yes
+            fi
+        elif [[ $type = d ]]; then
+            if [[ ! -d $path ]] || [[ ! -r $path ]]; then
+                echo "'$path' is not a folder, is not readable or does not exist!"
+                failed=yes
+            fi
+        fi
+    done< <(echo -e "$list")
+    if [[ $failed ]]; then
+        return 1
+    fi
+}

@@ -1,0 +1,385 @@
+#!/bin/bash
+
+# TODO:
+# - Add GC Stats
+
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+
+function help(){
+cat << EOM
+Usage: check_kafka [-H <host>] [-p <JMX_port>] -s <statistic>
+
+Statistics:
+    message_in_rate:                Message ingress rate (per second)
+    preq_failed:                    Producer requests failed (per second)
+    freq_failed:                    Fetch requests failed (per second)
+    bytes_in:                       Message data in (per second)
+    bytes_out:                      Message data out (per second)
+    partitions:                     Number of partitions
+    underrepl_parts:                Number of partitions that are not completely replicated
+    is_controller:                  True if this broker is the Kafka controller
+    leader_elect_rate:              Non-zero if there are broker failures
+    isr_expand:                     If a broker goes up again, ISR will be expanded once the
+                                    replicas are fully caught up. Other than that, the expected
+                                    value is 0
+    isr_shrink:                     If a broker goes down, ISR for some of the partitions will
+                                    shrink. Other than that, the expected value is 0
+EOM
+}
+
+# Exit status variables
+UNKNOWN=3
+CRITICAL=2
+WARNING=1
+OK=0
+
+# Get options
+while getopts "H:p:s:w:c:h" option; do
+   case $option in
+      H)      HOST=$OPTARG ;;
+      p)      JMXPORT=$OPTARG ;;
+      s)      STAT=$OPTARG ;;
+      w)      WARN=$OPTARG ;;
+      c)      CRIT=$OPTARG ;;
+      h|\?)   help ; exit 0 ;;
+      *)      help ; exit $UNKNOWN ;;
+   esac
+done
+
+# VARIABLES
+HOST=${HOST:-"0.0.0.0"}
+JMXPORT=${JMXPORT:-"9999"}
+BC_CMD=${BC_CMD:-"$(which bc)"}
+JMXTERM=${JMXTERM:-"$DIR/jmxterm.jar"}
+JMXCMD="java -jar ${JMXTERM} -n -v silent -l ${HOST}:${JMXPORT}"
+MSGHEADER="Kafka:"
+
+# THRESHOLD DATA, VARIABLES & MESSAGES
+declare -A DATA=(
+    # THRESHOLDS
+    ["message_in_rate_OK"]='> -1'
+    ["message_in_rate_WARN"]='< -1'
+    ["message_in_rate_CRIT"]='< -1'
+
+    ["preq_failed_OK"]='> -1'
+    ["preq_failed_WARN"]='< -1'
+    ["preq_failed_CRIT"]='< -1'
+
+    ["freq_failed_OK"]='> -1'
+    ["freq_failed_WARN"]='< -1'
+    ["freq_failed_CRIT"]='< -1'
+
+    ["bytes_in_OK"]='> -1'
+    ["bytes_in_WARN"]='< -1'
+    ["bytes_in_CRIT"]='< -1'
+
+    ["bytes_out_OK"]='> -1'
+    ["bytes_out_WARN"]='< -1'
+    ["bytes_out_CRIT"]='< -1'
+
+    ["partitions_OK"]='> -1'
+    ["partitions_WARN"]='< -1'
+    ["partitions_CRIT"]='< -1'
+
+    ["underrepl_parts_OK"]='== 0'
+    ["underrepl_parts_WARN"]='> 0'
+    ["underrepl_parts_CRIT"]='> 1'
+
+    ["is_controller_OK"]='> -1'
+    ["is_controller_WARN"]='< -1'
+    ["is_controller_CRIT"]='< -1'
+
+    ["leader_elect_rate_OK"]='== 0'
+    ["leader_elect_rate_WARN"]='> 1'
+    ["leader_elect_rate_CRIT"]='> 2'
+
+    ["isr_expand_OK"]='== 0'
+    ["isr_expand_WARN"]='> 1'
+    ["isr_expand_CRIT"]='> 2'
+
+    ["isr_shrink_OK"]='== 0'
+    ["isr_shrink_WARN"]='> 1'
+    ["isr_shrink_CRIT"]='> 2'
+
+    # STATISTICS & QUERIES
+    ["message_in_rate_MSG"]='Input message'
+    ["message_in_rate_QUERY"]='domain kafka.server\nbean type=BrokerTopicMetrics,name=MessagesInPerSec'
+    ["message_in_rate_STAT"]='RateUnit FiveMinuteRate'
+    ["message_in_rate_SHOW"]='FiveMinuteRate'
+    ["message_in_rate_TRANS"]='FiveMinuteRate=MessagesIn'
+
+    ["preq_failed_MSG"]='Failed produce requests'
+    ["preq_failed_QUERY"]='domain kafka.server\nbean type=BrokerTopicMetrics,name=FailedProduceRequestsPerSec'
+    ["preq_failed_STAT"]='RateUnit FiveMinuteRate'
+    ["preq_failed_SHOW"]='FiveMinuteRate'
+    ["preq_failed_TRANS"]='FiveMinuteRate=FailedProduceRequests'
+
+    ["freq_failed_MSG"]='Failed fetch requests'
+    ["freq_failed_QUERY"]='domain kafka.server\nbean type=BrokerTopicMetrics,name=FailedFetchRequestsPerSec'
+    ["freq_failed_STAT"]='RateUnit FiveMinuteRate'
+    ["freq_failed_SHOW"]='FiveMinuteRate'
+    ["freq_failed_TRANS"]='FiveMinuteRate=FailedFetchRequests'
+
+    ["bytes_in_MSG"]='Bytes in'
+    ["bytes_in_QUERY"]='domain kafka.server\nbean type=BrokerTopicMetrics,name=BytesInPerSec'
+    ["bytes_in_STAT"]='RateUnit FiveMinuteRate'
+    ["bytes_in_SHOW"]='FiveMinuteRate'
+    ["bytes_in_TRANS"]='FiveMinuteRate=BytesIn'
+    ["bytes_in_UNIT"]='B'
+
+    ["bytes_out_MSG"]='Bytes in'
+    ["bytes_out_QUERY"]='domain kafka.server\nbean type=BrokerTopicMetrics,name=BytesInPerSec'
+    ["bytes_out_STAT"]='RateUnit FiveMinuteRate'
+    ["bytes_out_SHOW"]='FiveMinuteRate'
+    ["bytes_out_TRANS"]='FiveMinuteRate=BytesOut'
+    ["bytes_out_UNIT"]='B'
+
+    ["partitions_MSG"]='Partitions'
+    ["partitions_QUERY"]='domain kafka.server\nbean type=ReplicaManager,name=PartitionCount'
+    ["partitions_STAT"]='Value'
+    ["partitions_TRANS"]='Value=Partitions'
+
+    ["underrepl_parts_MSG"]='Underreplicated partitions'
+    ["underrepl_parts_QUERY"]='domain kafka.server\nbean type=ReplicaManager,name=UnderReplicatedPartitions'
+    ["underrepl_parts_STAT"]='Value'
+    ["underrepl_parts_TRANS"]='Value=UnderReplicatedPartitions'
+
+    ["is_controller_MSG"]='Is controller'
+    ["is_controller_QUERY"]='domain kafka.controller\nbean type=KafkaController,name=ActiveControllerCount'
+    ["is_controller_STAT"]='Value'
+    ["is_controller_TRANS"]='Value=ActiveController'
+
+    ["leader_elect_rate_MSG"]='Leader election rate'
+    ["leader_elect_rate_QUERY"]='domain kafka.controller\nbean type=ControllerStats,name=LeaderElectionRateAndTimeMs'
+    ["leader_elect_rate_STAT"]='Count'
+    ["leader_elect_rate_TRANS"]='Count=LeaderElectionRate'
+
+    ["isr_expand_MSG"]='ISR expansion rate'
+    ["isr_expand_QUERY"]='domain kafka.server\nbean type=ReplicaManager,name=IsrExpandsPerSec'
+    ["isr_expand_STAT"]='Count'
+    ["isr_expand_TRANS"]='Count=IsrExpands'
+
+    ["isr_shrink_MSG"]='ISR shrink rate'
+    ["isr_shrink_QUERY"]='domain kafka.server\nbean type=ReplicaManager,name=IsrShrinksPerSec'
+    ["isr_shrink_STAT"]='Count'
+    ["isr_shrink_TRANS"]='Count=IsrShrinks'
+)
+
+# Function to compare values to thresholds
+function cmp(){
+    local args="$*"
+    if [ -z "$1" -o -z "$2" ]; then
+        echo "$MSGHEADER Unknown error!!"
+        exit "$UNKNOWN"
+    fi
+    # Discard float numbers with a definition of exponent above -10
+    if [[ "$1" =~ ^.*E-[1-9]{1}[0-9]{1}[0-9]*$ ]]; then
+        args="0 $2"
+    fi
+    exit_value="$(echo "$args" | BC)"
+    if [ "$exit_value" = 1 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Echo to STDERR
+function echo_err(){
+    local msg=$*
+    echo -e "$msg" >&2
+}
+
+# Function to capture syntax errors from bc
+function BC(){
+    local output
+    #if read -t 0; then
+        output=$(cat | $BC_CMD 2> "$stderr")
+    #else
+    #    exit $UNKNOWN
+    #fi
+    if grep -q "syntax error" "$stderr"; then
+        echo_err "bc: syntax error"
+        exit $UNKNOWN
+    fi
+    echo "$output"
+}
+
+# Rebuild hash stored in hash
+function rebuildHash(){
+    local hashName=$1
+    shift
+    local args=$*
+    if [ ! "$args" ]; then return ; fi
+    echo "$args" |tr -t ' ' '\n' > "$tmp"
+    while IFS=$'=' read key value; do
+        eval "$hashName[$key]=$value"
+    done<"$tmp"
+}
+
+# Function to convert to seconds given the unit of measure (rate(calls/s))
+function toSeconds(){
+    local size=$1
+    local unit=$2
+    # Discard float numbers with a definition of exponent above -19
+    if [[ "$1" =~ ^.*E-[1-9]{1}[0-9]{1}[0-9]*$ ]]; then
+        size="0"
+    fi
+    case "$unit" in
+        seconds|SECONDS)            factor="*1" ;;
+        milliseconds|MILLISECONDS)  factor="*1000" ;;
+        microseconds|MICROSECONDS)  factor="*1000000" ;;
+    esac
+    echo "scale=2;$size$factor" | BC | sed -e "s/^\./0./"
+}
+
+# Clean temp files upon exit
+function cleanup(){
+    rm -f "$tmp" "$stderr" # Remove temp files
+}
+trap cleanup 0
+
+# Define trap function to execute a method upon error on failure and exit
+function error(){
+    local parent_lineno="$1"
+    local message="$2"
+    local code="${3:-$UNKNOWN}"
+    local funcname="${4}"
+    if [ ! -z "$funcname" ]; then
+        funcname="on function $funcname or "
+    fi
+    if [[ -n "$message" ]] ; then
+        echo "Error ${funcname}near line ${parent_lineno}: ${message}; exiting with status ${code}"
+    else
+        echo "Error ${funcname}near line ${parent_lineno}; exiting with status ${code}"
+    fi
+    exit "${code}"
+}
+trap 'error ${LINENO} ${FUNCNAME}' ERR
+
+############################ MAIN START ############################
+
+if ! (echo > /dev/tcp/"$HOST"/"$JMXPORT") >/dev/null 2>&1; then
+    echo "$MSGHEADER $HOST:$JMXPORT is down!"
+    exit $CRITICAL
+fi
+
+if [ ! -x "$BC_CMD" ]; then
+    echo "\`bc\` command is missing. Plugin needs \`bc\` package to work."
+    exit $UNKNOWN
+fi
+
+if [ ! -r "$JMXTERM" ]; then
+    echo "\`jmxterm\` JAR is missing. Plugin needs \`jmxterm\` JAR to work."
+    help
+    exit $UNKNOWN
+fi
+
+if [ -z "$STAT" ]; then
+    echo "Statistic is mandatory"
+    help
+    exit $UNKNOWN
+fi
+
+
+tmp=$(mktemp -p /dev/shm)
+stderr=$(mktemp -p /dev/shm)
+declare -A unit translate
+case $STAT in
+    message_in_rate|preq_failed|freq_failed|bytes_in|bytes_out|partitions|underrepl_parts|is_controller|leader_elect_rate|isr_expand|isr_shrink)
+        # Set thresholds, messages, stats and queries for stat $STAT
+        message=${DATA[${STAT}_MSG]}   # Output header
+        query=${DATA[${STAT}_QUERY]}   # Query to issue
+        stat=${DATA[${STAT}_STAT]}     # Stat to retrieve
+        showStat=${DATA[${STAT}_SHOW]}                  # Stat to be shown on output (not perfdata)
+        rebuildHash unit ${DATA[${STAT}_UNIT]}          # Units for stats
+        rebuildHash translate ${DATA[${STAT}_TRANS]}    # Units for translations
+        unit=${DATA[${STAT}_UNIT]}     # Unit for stat
+        THRESHOLD_OK=${DATA[${STAT}_OK]}     # OK threshold
+        THRESHOLD_WARN=${DATA[${STAT}_WARN]} # WARN threshold
+        THRESHOLD_CRIT=${DATA[${STAT}_CRIT]} # CRIT threshold
+        # Default showStat value
+        if [ ! "$showStat" ]; then
+            showStat=${stat[*]}
+        fi
+    ;;
+   *)
+        help ; exit $UNKNOWN
+    ;;
+esac
+
+# Override default warning & critical threshold values
+if [ "$WARN" ]; then
+    THRESHOLD_WARN="$(echo $THRESHOLD_WARN | cut -d ' ' -f1) $WARN"
+fi
+if [ "$CRIT" ]; then
+    THRESHOLD_CRIT="$(echo $THRESHOLD_CRIT | cut -d ' ' -f1) $CRIT"
+fi
+
+# Build JMX query
+for attribute in "${stat[@]}"; do
+    query2="${query2}get ${attribute}\n"
+done
+query="$query\n$query2"
+echo -e "$query" > "$tmp"
+
+# Run the query against the Kafka JMX port
+output=$($JMXCMD -i "$tmp" 2> "$stderr" | tr -t '\n' ' ' | sed -e "s/ = /=/g" 2>/dev/null | tr -s ' ')
+
+# Manage stderr in case any error occurs (java doesn't care about exit status)
+if  [ -s "$stderr" ]; then
+    echo "$MSGHEADER Error connecting to $HOST"
+    exit $UNKNOWN
+fi
+
+# Extract data to show on plugin output
+echo "$output" | sed -e "s/ /\n/g" -e "s/;//g" | grep . > "$tmp"
+unset output
+while IFS=$'= ' read key value; do
+    case "$key" in
+        RateUnit)       RATE_UNIT="$value" ; continue ;;
+        *MinuteRate)    value=$(toSeconds "$value" "$RATE_UNIT")
+    esac
+    statKey=${translate[$key]}
+    # Build output message
+    if [[ "$key" =~ ^$showStat$ ]]; then
+        statValue="$value"
+        statOutput="${statKey:-"$key"}: $value"
+        if [ "$showUnit" ]; then
+            statOutput="$statOutput${unit[$key]}"
+        fi
+    fi
+    # Build output perfdata
+    output="$output ${statKey:-"$key"}=$value${unit[$key]};"
+    if [ ! "$done" ]; then
+        output=${output// /}
+        done="yes"
+    fi
+done < "$tmp"
+
+#statOutput="$(echo -e "$output" | sed -e "s/^.*\($stat=[^;]*\).*$/\1/" 2>-)"
+#statValue="$(echo -e "$output" | sed -e "s/^.*$stat=\([^;]*\).*$/\1/" 2>-)"
+
+# Fill $exit_status according to values and thresholds
+if cmp "$statValue" "$THRESHOLD_CRIT";then
+    message="$message CRITICAL"
+    exit_status=$CRITICAL
+elif cmp "$statValue" "$THRESHOLD_WARN"; then
+    message="$message WARNING"
+    exit_status=$WARNING
+elif cmp "$statValue" "$THRESHOLD_OK"; then
+    message="$message OK"
+    exit_status=$OK
+fi
+
+output=$(echo -e "$output" | sed -e "s/\([a-zA-Z]*\)=\([^;]*\);/\1=\2$unit;/g" 2>/dev/null)
+
+if [ ! -z "$output" ]; then
+    output=" | $output"
+fi
+
+# Print service information and performance data
+echo "$MSGHEADER $message $statOutput$output"
+
+# Exit and return a value according to defined thresholds
+exit $exit_status

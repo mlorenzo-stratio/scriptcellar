@@ -1,0 +1,48 @@
+#!/bin/bash
+
+HOST=$(echo $1 | cut -d '.' -f1)
+WARNING_THRESHOLD=$2
+CRITICAL_THRESHOLD=$3
+SCRIPTNAME=$(basename $0)
+STATSDIR=/dev/shm/netapp/$HOST
+CONFIG="/usr/local/nagios/libexec/netapp_stats_retriever.cfg"
+source $CONFIG
+
+OK=0
+WARNING=1
+CRITICAL=2
+UNKNOWN=3
+
+gt(){
+        num1=$1
+        num2=$2
+        if (( $(echo "${num1} > ${num2}" | bc) == 1 )); then
+                return 0;
+        else
+                return 1;
+        fi
+}
+
+LUN_DISKS_string=$(declare -p $HOST"_LUN_DISKS")
+eval "declare -A LUN_DISKS="${LUN_DISKS_string#*=}
+case $HOST in
+	maddp07|maddp08|fasadm02);;
+	*) echo "$SCRIPTNAME: $HOST is not supported/configured" ; exit $UNKNOWN ;;
+esac
+
+EXIT_CODE=0
+MESSAGE="$HOST average LUN latencies:"
+for lun in $STATSDIR/* ; do
+	latency="$(echo "scale=3;($(cat $lun | tr -t '\n' '+' | sed -e "s/+$//"))/3" | bc | sed -e "s/^\./0./")"
+	lun=${LUN_DISKS[$(basename $lun)]}
+	perfdata="$latency"ms";$WARNING_THRESHOLD;$CRITICAL_THRESHOLD"
+	MESSAGE="$MESSAGE "$lun=$latency"ms"
+	PERFDATA="$PERFDATA $lun=$perfdata"
+	if gt $latency $CRITICAL_THRESHOLD; then
+		EXIT_CODE=$CRITICAL
+	elif gt $latency $WARNING_THRESHOLD; then
+		EXIT_CODE=$WARNING
+	fi
+done
+echo "$MESSAGE |$PERFDATA"
+exit $EXIT_CODE

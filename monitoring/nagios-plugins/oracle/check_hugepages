@@ -1,0 +1,49 @@
+#!/bin/bash
+#
+# Author: Matthew Harman
+# Date: 08/03/12
+# Purpose: Checks the hugepages in use are within limits
+#
+ 
+PROGNAME=`basename $0`
+PROGPATH=`echo $0 | sed -e 's,[\\/][^\\/][^\\/]*$,,'`
+REVISION=`echo '$Revision: 1.00 $' | sed -e 's/[^0-9.]//g'`
+ 
+. $PROGPATH/utils.sh
+ 
+print_usage() {
+    echo "Usage: check_huge_pages  "
+    echo "e.g. check_huge_pages 80 90"
+    }
+ 
+# Make sure the correct number of command line
+# arguments have been supplied
+ 
+if [ $# -lt 2 ]; then
+    print_usage
+    exit $STATE_UNKNOWN
+fi
+
+WARNING=$1
+CRITICAL=$2
+
+ 
+TOTALPAGES=`cat /proc/meminfo |grep "HugePages_Total"|awk -F":" '{print $2}' | tr -d '[[:space:]]'`
+FREEPAGES=`cat /proc/meminfo |grep "HugePages_Free"|awk -F":" '{print $2}' | tr -d '[[:space:]]'`
+let USEDPAGES=(TOTALPAGES-FREEPAGES)
+let WARN_PCT=(TOTALPAGES*WARNING)/100
+let CRIT_PCT=(TOTALPAGES*CRITICAL)/100
+ 
+# Work out percentage
+USED_SPACE=`echo "scale=0; ($USEDPAGES)*100/${TOTALPAGES}"|/usr/bin/bc`
+ 
+if [ $USED_SPACE -gt $CRITICAL ] ; then
+   echo "HugePages free: $FREEPAGES/$TOTALPAGES CRITICAL, ${USED_SPACE}% used | usedpages=$USEDPAGES;$WARN_PCT;$CRIT_PCT;0;$TOTALPAGES"
+   exit $STATE_CRITICAL
+elif [ $USED_SPACE -gt $WARNING ] ; then
+   echo "HugePages free: $FREEPAGES/$TOTALPAGES WARNING, ${USED_SPACE}% used | usedpages=$USEDPAGES;$WARN_PCT;$CRIT_PCT;0;$TOTALPAGES"
+   exit $STATE_WARNING
+else
+   echo "HugePages free: $FREEPAGES/$TOTALPAGES OK, ${USED_SPACE}% used | usedpages=$USEDPAGES;$WARN_PCT;$CRIT_PCT;0;$TOTALPAGES"
+   exit $STATE_OK
+fi

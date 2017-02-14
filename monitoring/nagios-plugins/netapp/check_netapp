@@ -1,0 +1,204 @@
+#!/bin/bash
+
+if [ $# -lt 5 ]; then
+	echo "Usage: $0 <host> <iops_warning> <iops_critical> <ut_warning%> <ut_critical%>"
+	exit 4
+fi
+
+
+HOST=$1
+IOPS_WARNING=$2
+IOPS_CRITICAL=$3
+UT_WARNING=$4
+UT_CRITICAL=$5
+shift 5
+REST=$*
+declare -A CUSTOM_WARN_THRESHOLDS CUSTOM_CRIT_THRESHOLDS
+for thing in $REST; do
+	aggregate=$(echo $thing | cut -d ':' -f1)
+	warn_threshold=$(echo $thing | cut -d ':' -f2)
+	crit_threshold=$(echo $thing | cut -d ':' -f3)
+	CUSTOM_WARN_THRESHOLDS[$aggregate]=$warn_threshold
+	CUSTOM_CRIT_THRESHOLDS[$aggregate]=$crit_threshold
+done
+
+#if [ $1 = "fasadm01" ]; then
+	#echo "==========================================================================================================================================================" >> /tmp/netapp_$HOST
+	#{ date | tr -d '\n' ; echo -n " " ; } >> /tmp/netapp_$HOST
+	#echo "USER=\"$USER\" HOST=\"$HOST\" IOPS_WARNING=\"$IOPS_WARNING\" IOPS_CRITICAL=\"$IOPS_CRITICAL\" UT_WARNING=\"$UT_WARNING\" UT_CRITICAL=\"$UT_CRITICAL\" REST=\"$REST\"" >> /tmp/netapp_$HOST
+#fi
+
+TMP=$(mktemp)
+DATA=$(mktemp)
+
+DEBUG=0
+
+AGG_OUTPUT_CRIT=""
+AGG_OUTPUT_WARN=""
+DSK_OUTPUT_CRIT=""
+DSK_OUTPUT_WARN=""
+PERFDATA=" |"
+STATUS=0
+#declare -A DESC=([Prd_Ag0]="Back" [Prd_Ag1]="Front" [aggr0]="back")
+
+if [ "$USER" != "root" ]; then
+	precmd="sudo "
+fi
+
+debug(){
+	if [ "$DEBUG" != 0 ]; then
+		echo $*
+	fi
+}
+
+ge(){
+        num1=$1
+        num2=$2
+        if (( $(echo "${num1} > ${num2}" | bc) == 1 )); then
+                return 0;
+        else
+                return 1;
+        fi
+}
+
+# Get disks and aggregates statistics
+$precmd /usr/bin/rsh $HOST "priv set advanced; statit -e; priv set" > $TMP 2>&1
+#echo "$precmd /usr/bin/rsh $HOST \"priv set advanced; statit -e; priv set\"" >> /tmp/netapp_$HOST
+#$precmd /usr/bin/rsh $HOST "priv set advanced; statit -e; priv set" 2>&1 >> /tmp/netapp_$HOST
+
+if ! grep -q "must first do statit -b" $TMP; then
+	#if [ $HOST = "fasadm01.rumbo.prd" ]; then
+	#	ls -la $TMP 2>&1 >> /tmp/netapp_$HOST
+	#	cat $TMP >> /tmp/netapp_$HOST
+	#	
+	#fi
+	$precmd /usr/bin/rsh $HOST "priv set advanced; statit -b; priv set" 2>/dev/null
+	# create output
+	backIFS=$IFS
+	IFS=$'\n'
+	data_found=""
+	AGGREGATE=""
+	IOPS_SUM=0
+	for line in $(cat $TMP); do
+		if [[ "$line" =~ ^disk ]]; then
+			data_found=1
+			continue
+		elif [ $data_found ] && [[ "$line" =~ ^/ ]]; then
+			# get NetApp aggregate
+			newAGGREGATE=$(echo $line | sed -e "s/^\///" -e "s/\//_/g" -e "s/:$//" -e "s/^\([a-zA-Z0-9_]*\)_plex.*$/\1/")
+			# Store IOPS of Aggregate just processed
+			if [ "$AGGREGATE" != "" ] && [ "$newAGGREGATE" != $AGGREGATE ]; then
+				PERFDATA="$PERFDATA $AGGREGATE=$IOPS_SUM"
+				if ge $IOPS_SUM $IOPS_CRIT; then
+					STATUS=2
+					AGG_OUTPUT_CRIT="$AGG_OUTPUT_CRIT$AGGREGATE >= $IOPS_CRIT, "
+				elif ge $IOPS_SUM $IOPS_WARN; then
+					STATUS=1
+					[ $STATUS -lt 1 ] && STATUS=1
+					AGG_OUTPUT_WARN="$AGG_OUTPUT_WARN$AGGREGATE >= $IOPS_WARN, "
+				fi
+				debug "agg_output_warn: $AGG_OUTPUT_WARN"
+				debug "agg_output_crit: $AGG_OUTPUT_CRIT"
+				debug "$AGGREGATE=$IOPS_SUM"
+				debug
+				IOPS_SUM=0
+			elif [ "$AGGREGATE" = $newAGGREGATE ]; then
+				continue
+			fi
+			AGGREGATE=$newAGGREGATE
+			# Apply custom aggregate thresholds
+			IOPS_WARN=${CUSTOM_WARN_THRESHOLDS[$AGGREGATE]:-$IOPS_WARNING}
+			IOPS_CRIT=${CUSTOM_CRIT_THRESHOLDS[$AGGREGATE]:-$IOPS_CRITICAL}
+			debug "Processing $AGGREGATE..."
+			continue
+		elif [ $data_found ] && [[ $line =~ Aggregate\ statistics: ]]; then
+			PERFDATA="$PERFDATA $AGGREGATE=$IOPS_SUM"
+			if ge $IOPS_SUM $IOPS_CRIT; then
+				STATUS=2
+				AGG_OUTPUT_CRIT="$AGG_OUTPUT_CRIT$AGGREGATE >= $IOPS_CRIT, "
+			elif ge $IOPS_SUM $IOPS_WARN; then
+				STATUS=1
+				[ $STATUS -lt 1 ] && STATUS=1
+				AGG_OUTPUT_WARN="$AGG_OUTPUT_WARN$AGGREGATE >= $IOPS_WARN, "
+			fi
+			debug "agg_output_warn: $AGG_OUTPUT_WARN"
+			debug "agg_output_crit: $AGG_OUTPUT_CRIT"
+			debug "$AGGREGATE=$IOPS_SUM"
+			debug
+			debug "  break: \"$line\""
+			debug
+			break
+		elif [ $data_found ]; then
+			# get data
+			#debug "  data: \"$line\""
+			#debug "  IOPS_SUM: \"$IOPS_SUM\""
+			IFS=$' '
+			line=$(echo $line | tr -s ' ')
+			disk=$(echo $line | cut -d' ' -f1)
+			ut=$(echo $line | cut -d' ' -f2)
+			xfers=$(echo $line | cut -d' ' -f3)
+			IOPS_SUM=$(echo $IOPS_SUM + $xfers | bc)
+			debug "  read: $disk $ut $xfers, IOPS_SUM: $IOPS_SUM"
+			echo "$AGGREGATE $line" | tr -s ' ' >> $DATA
+		else
+			#debug "no data: \"$line\""
+			continue
+		fi
+	done
+	IFS=$' '
+	if [ $data_found ]; then
+		while read aggregate disk ut xfers rest; do
+			disk="disk_$disk"
+			debug "$aggregate: $disk $ut $xfers"
+			PERFDATA="$PERFDATA $disk=$ut"
+			if ge $ut $UT_CRITICAL; then
+				STATUS=2
+				DSK_OUTPUT_CRIT="$DSK_OUTPUT_CRIT$disk, "
+			elif ge $ut $UT_WARNING; then
+				[ $STATUS -lt 1 ] && STATUS=1
+				DSK_OUTPUT_WARN="$DSK_OUTPUT_WARN$disk, "
+			fi
+		done < $DATA
+	fi
+	IFS=$backIFS
+else
+	OUTPUT="First execution in progress..."
+	STATUS=3 
+	$precmd /usr/bin/rsh $HOST "priv set advanced; statit -b; priv set" 2>/dev/null
+fi
+
+if [ "$PERFDATA" != " |" ]; then
+	AGG_OUTPUT_WARN=$(echo $AGG_OUTPUT_WARN | sed -e "s/,[[:space:]]*$/;/")
+	AGG_OUTPUT_CRIT=$(echo $AGG_OUTPUT_CRIT | sed -e "s/,[[:space:]]*$/;/")
+	DSK_OUTPUT_WARN=$(echo $DSK_OUTPUT_WARN | sed -e "s/,[[:space:]]*$/;/")
+	DSK_OUTPUT_CRIT=$(echo $DSK_OUTPUT_CRIT | sed -e "s/,[[:space:]]*$/;/")
+
+	if [ -n "$AGG_OUTPUT_CRIT" ]; then
+		OUTPUT="$OUTPUT Aggregates CRITICAL: $AGG_OUTPUT_CRIT"
+	fi
+	if [ -n "$DSK_OUTPUT_CRIT" ]; then
+		OUTPUT="$OUTPUT Disks CRITICAL: $DSK_OUTPUT_CRIT >= $UT_CRITICAL%"
+	fi
+	if [ -n "$AGG_OUTPUT_WARN" ]; then
+		OUTPUT="$OUTPUT Aggregates WARNING: $AGG_OUTPUT_WARN"
+	fi
+	if [ -n "$DSK_OUTPUT_WARN" ]; then
+		OUTPUT="$OUTPUT Disks WARNING: $DSK_OUTPUT_WARN >= $UT_WARNING%"
+	fi
+	debug
+	if [ -z "$OUTPUT" ]; then
+		echo "NetApp: aggregates/disks OK$PERFDATA"
+	else
+		echo "NetApp:$OUTPUT$PERFDATA"
+	fi
+else
+	echo $OUTPUT
+fi
+
+#if [ $HOST = "fasadm01" ]; then
+#	{ date | tr -d '\n' ; echo -n " " ; } >> /tmp/netapp_$HOST
+#	echo $OUTPUT$PERFDATA >> /tmp/netapp_$HOST
+#fi
+
+rm -f $TMP $DATA
+exit $STATUS

@@ -1,0 +1,44 @@
+#!/bin/bash
+
+LOG="/rmb/log/logstash-forwarder.log"
+CACHE="/dev/shm/_check_logstash_forwarder_"
+
+OK=0
+WARNING=1
+CRITICAL=2
+UNKNOWN=3
+
+if [ ! -e "$CACHE" ]; then
+	grep "Registrar received" $LOG > $CACHE
+	echo "First execution. Polling data..."
+	exit $UNKNOWN
+fi
+
+tmp=$(mktemp -p /dev/shm)
+tmp2=$(mktemp -p /dev/shm)
+
+# Filter lines containing register info
+grep "Registrar received" $LOG > $tmp
+
+# Get new lines diffing with latter log
+diff $CACHE $tmp | grep ^\> | sed -e "s/^> //" > $tmp2
+
+# Store cache
+cp $tmp $CACHE
+
+# Get new events
+COUNT=$[ $(cat $tmp2 | sed -e "s/^.* Registrar received \([0-9]*\) events/\1/" | tr -t '\n' '+' | sed -e "s/+$/\n/") ]
+COUNT=${COUNT:-0}
+
+EXIT_STATUS=$OK
+MESSAGE="Logstash forwarder registered $COUNT events"
+# Check logstash-forwarder status
+if ! service logstash-forwarder status >/dev/null 2>&1; then
+	EXIT_STATUS=$CRITICAL
+	MESSAGE="Logstash forwarder is NOT running!!"
+fi
+
+echo "$MESSAGE | logstash_events=$COUNT;;;"
+rm -f $tmp $tmp2
+
+exit $EXIT_STATUS

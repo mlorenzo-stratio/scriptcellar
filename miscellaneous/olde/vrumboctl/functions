@@ -1,0 +1,866 @@
+#!/bin/bash
+
+MYDIR=$(dirname $0)
+
+# Prints rumboctl commandline usage
+usage(){
+        cat << EOH
+Usage: $SCRIPTNAME   list_apps | list_servers
+                 | list_infinispan | list_redis | list_terracotta
+                 | copy_war <app1...appN> [<server1...serverN>]
+                 | deploy_war <app1...appN> [<server1...serverN>]
+                 | graceful_deploy <app> [<server1...serverN>]
+                 | full_deploy [wait_time] <app> [<server1...serverN>]
+                 | graceful_restart [wait_time] <app> [<server1...serverN>]
+                 | full_restart [wait_time] <app> [<server1...serverN>]
+                 | graceful_stop [wait_time] <app> [<server1...serverN>]
+                 | full_stop <app> [<server1...serverN>]
+                 | graceful_start <app> [<server1...serverN>]
+                 | full_start [wait_time] <app> [<server1...serverN>]
+                 | app <start|stop|restart|status|kill|threaddump|heapdump|waitfornode>
+                              <app> [<server1...serverN>]
+                 | balancer <enable|disable|status> <server1...serverN>
+                 | infinispan <app> <start|stop|restart|kill|info>
+                 | terracotta <app> <start|restart> [--delete]
+                 |            <app> <stop|kill|info>
+                 | maintenance <enable|disable|status> <app1...appN>
+                 | jon agent <start|stop|restart|kill|info> <server1...serverN>
+                 | jon server <start|stop|restart|kill|info>
+		 | clean_temp <app1..appN>
+
+   list_apps                                       Prints a list of all available applications
+   list_servers                                    Prints a list of all available servers
+   list_infinispan                                 Prints a list of all available Infinispan nodes
+   list_redis                                      Prints a list of all available Redis nodes
+   list_terracotta                                 Prints a list of all available Terracotta nodes
+   copy_war                                        Copies specified app WARs to JBoss servers
+      <app1...appN> [<server1...serverN>]
+   deploy_war                                      Deploys specified app WARs to JBoss servers
+      <app1...appN> [<server1...serverN>]
+   graceful_deploy                                 Performs graceful deploy of app on JBoss nodes/servers
+      [wait_time] <app> [<server1...serverN>]
+       wait_time: time for each JBoss to finish serving pending requests. Stop after that.
+   full_deploy                                     Performs full deploy of app on JBoss nodes/servers
+      [wait_time] <app> [<server1...serverN>]
+       wait_time: time for all selected JBoss's to startup. Disable maintenance page after that if enabled.
+   graceful_restart                                Performs graceful restart of app on JBoss nodes/servers
+      [wait_time] <app> [<server1...serverN>]
+       wait_time: time for each JBoss to finish serving pending requests. Stop after that.
+   full_restart                                     Performs full restart of app on JBoss nodes/servers
+      [wait_time] <app> [<server1...serverN>]
+       wait_time: time for all selected JBoss's to startup. Disable maintenance page after that if enabled.
+   graceful_stop                                   Performs graceful stop of app on JBoss nodes/servers
+      [wait_time] <app> [<server1...serverN>]
+       wait_time: time for each JBoss to finish serving pending requests. Stop after that.
+   full_stop                                       Performs full stop of app on JBoss nodes/servers
+      <app> [<server1...serverN>]
+   graceful_start                                  Performs graceful start of app on JBoss nodes/servers
+      <app> [<server1...serverN>]
+   full_start                                      Performs full start of app on JBoss nodes/servers
+      [wait_time] <app> [<server1...serverN>]
+       wait_time: time for all selected JBoss's to startup. Disable maintenance page after that if enabled.
+   app                                             Provides JBoss/Tomcat nodes management
+      <start|stop|restart|status|kill|threaddump|heapdump|waitfornode> <app> [<server1...serverN>]
+   balancer                                        Provides Mod-Jk nodes management
+      <enable|disable|status> <server1...serverN>
+   terracotta <app> <start|restart> [--delete]     Provides Terracotta nodes management
+	      <app> <stop|kill|info>
+   infinispan                                      Provides Infinispan nodes management
+              <app> <start|stop|restart|kill|info>
+   maintenance                                     Provides maintenance page management
+              <enable|disable|status> <app1..appN>
+   jon agent                                       Provides JON Agent management
+              <start|stop|restart|kill|info> <server1...serverN>
+   jon server                                      Provides JON Server management
+              <start|stop|restart|kill|info>
+   clean_temp <app1..appN>			   Cleans temp files
+EOH
+}
+
+wait_time(){ # wait for node to end transactions
+	local seconds=10
+        local times=$(echo $1 / $seconds | bc)
+        shift
+        local message=$*
+	echo -en "$message"
+        while [ $times -gt 0 ]; do
+                sleep $seconds
+		echo -n "."
+                let times=times-1
+        done
+	echo
+}
+
+lock(){
+        local _app=$1
+        local _pid=""
+        local msg=""
+        if [ -e "$LOCK_DIR/$_app.pid" ]; then
+                _pid=$(cat $LOCK_DIR/$_app.pid)
+                if ! kill -0 $_pid > /dev/null 2>&1; then
+                        if [ ! -e $LOCK_DIR/$_app ]; then
+                                touch $LOCK_DIR/$_app
+                                echo $PPID > $LOCK_DIR/$_app.pid
+                                return 0
+                        else   
+                                msg="Lockfile found but no process running on application \`$app\`\nRun \`$SCRIPTNAME clean_temp $_app\` to clean temp files"
+                        fi
+                else   
+                        msg="Another process ($_pid) is performing actions on application \`$app\`"
+                fi
+        else   
+                if [ ! -e $LOCK_DIR/$_app ]; then
+                        touch $LOCK_DIR/$_app
+                        echo $PPID > $LOCK_DIR/$_app.pid
+                        return 0
+                else   
+                        msg="Lockfile found but no process running on application \`$app\`\nRun \`$SCRIPTNAME clean_temp $_app\` to clean temp files"
+                fi
+        fi
+        if [ $isDialog ]; then
+                echo -e "ERROR! $msg" | tee -a $TMP
+                return $LOCKED_APPLICATION
+        else
+                echo_err "ERROR! $msg"
+                exit $LOCKED_APPLICATION
+        fi
+}
+
+unlock(){
+        local _app=$1
+        if [ -e $LOCK_DIR/$_app ]; then
+                rm -fr $LOCK_DIR/$_app $LOCK_DIR/$_app.pid
+                return 0
+        fi
+        if [ $isDialog ]; then
+                echo -e "ERROR! Process exited unsuccesfully when managing application \`$app\`" | tee -a $TMP
+                return $UNKNOWN_ERROR
+        else
+                echo_err "ERROR! Process exited unsuccesfully when managing application \`$app\`"
+                exit $UNKNOWN_ERROR
+        fi
+}
+
+log(){ # log the parameters
+	if [ "$1" = "#main#" ]; then
+		LOG=$MAINLOG
+		shift
+	else
+		local LOG=$LOGDIR/$app
+	fi
+	if [ $ENABLED_LOG ]; then
+		case "$1" in
+			# write to log without appending a \n at the end
+			"-n") shift ; echo -en `date +%b\ %d\ %H:%M:%S`" $HOSTNAME $SCRIPTNAME: $*" >> $LOG ;;
+			# append to log in the last line
+			"-a") shift ; echo -e "$*" >> $LOG ;;
+			# write a unique-line log
+			*) echo -e `date +%b\ %d\ %H:%M:%S`" $HOSTNAME $SCRIPTNAME: $*" >> $LOG ;;
+		esac
+	fi
+}
+
+print_motd(){
+	local PERCENT=$1
+	local SERVER=$2
+	local APP=$3
+	local TYPE=$4
+	local -a header=(	"One Ring to rule them all,"
+				"One Ring to find them,"
+				"One Ring to bring them all and in the darkness bind them" )
+	if [ $PERCENT -le 33 ]; then
+		echo -e "XXX\n\n${header[0]}\n\n\n\nProcessing $APP:\n\t$TYPE@$SERVER\nXXX"
+	elif [ $PERCENT -gt 66 ]; then
+		echo -e "XXX\n\n${header[0]}\n${header[1]}\n${header[2]}\n\nProcessing $APP:\n\t$TYPE@$SERVER\nXXX"
+		echo "${header[0]}\n${header[1]}\n${header[2]}" > $TMP
+	elif [ $PERCENT -gt 33 ]; then
+		echo -e "XXX\n\n${header[0]}\n${header[1]}\n\n\nProcessing $APP:\n\t$TYPE@$SERVER\nXXX"
+	fi
+	
+}
+
+### Get/Check functions
+load_func_vars(){ # loads bash files that contain functions and variables
+	if [ ! "$CONFIG_LOADED" ]; then
+		if [ "$isDialog" ]; then
+			source $MYDIR/dialogs
+		fi
+	fi
+}
+retrieve_configuration(){ # builds the list of TC, ISPN, and JBOSS nodes
+	if [ "$CONFIG_LOADED" ]; then return ; fi
+	#echo LOADING PLATFORM CONFIGURATION... ###
+	local count=0
+	local TOTAL=$[ ${#APPSERVERS[@]} + ${#TERRACOTTASERVERS[@]} + ${#INFINISPANSERVERS[@]} + ${#REDISSERVERS[@]} ]
+	local PERCENT APP NODE LIST app tc ispn _app _tc _ispn
+
+	let count=count+1
+	if [ "$isDialog" ]; then
+		PERCENT=$(echo "($count*100)/$TOTAL" | bc)
+		echo $PERCENT
+	fi
+
+	LIST=$(mktemp -p $LOCK_DIR)
+	{
+		# vm_catalog format is:
+		#
+		# <hostname>;[STG|PRD] [APP|WEB|infinispan|terracotta|redis-server] [INFO];<cpu>;<mem>;<hypervisor>;<disk_size>;<datastore>
+		#
+		# The key for this table is <hostname> because it is unique and therefore can be used to identify each node/cache/webserver
+
+		# Get apps: <hostname>:<application>
+		grep ";$ENV APP" $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\);[A-Z]* APP \([^ ]*\).*$/\1:\2/" | tr -t '[[:upper:]]' '[[:lower:]]' | sort -u | tr -t '\n' ' '
+		echo -n "| "
+
+		# Get terracottas: <hostname>:<application>
+		grep ";$ENV terracotta" $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\);[A-Z]* terracotta \([^ ]*\).*$/\1:\2/" | tr -t '[[:upper:]]' '[[:lower:]]' | sort -u | tr -t '\n' ' '
+		echo -n "| "
+
+		# Get infinispans: <hostname>:<application>
+		grep ";$ENV infinispan" $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\);[A-Z]* infinispan \([^ ]*\).*$/\1:\2/" | tr -t '[[:upper:]]' '[[:lower:]]' | sort -u | tr -t '\n' ' '
+		echo -n "| "
+
+		# Get redis: <hostname>:<application>
+		grep ";$ENV redis-server" $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\);[A-Z]* redis-server \([^ ]*\).*$/\1:\2/" | tr -t '[[:upper:]]' '[[:lower:]]' | sort -u | tr -t '\n' ' '
+		echo
+	} > $LIST
+
+	NODES_ARRAY=($APP_LIST_FILE $TC_LIST_FILE $ISPN_LIST_FILE $REDIS_LIST_FILE)
+	TYPE_ARRAY=( "JBoss" "Terracotta" "Infinispan" "Redis")
+	N=0
+
+	let count=count+1
+	if [ "$isDialog" ]; then
+		PERCENT=$(echo "($count*100)/$TOTAL" | bc)
+		echo $PERCENT
+	fi
+
+	while IFS='|' read thing ; do
+                for _thing in $thing; do
+                        if [ $_thing = '|' ]; then
+                                let N=N+1
+				let count=count+1
+				if [ "$isDialog" ]; then
+					PERCENT=$(echo "($count*100)/$TOTAL" | bc)
+					echo $PERCENT
+				fi
+				continue
+			fi
+                        SERVER=$(echo $_thing | cut -d':' -f1)
+                        APP=$(echo $_thing | cut -d':' -f2)
+			if [ "$isDialog" ]; then
+				print_motd $PERCENT $SERVER $APP "${TYPE_ARRAY[$N]}"
+				echo $PERCENT
+			fi
+			echo $APP >> ${NODES_ARRAY[$N]}
+			echo $SERVER";"${TYPE_ARRAY[$N],,}";"$APP >> $NODES_LIST_FILE
+		done
+	done < $LIST
+
+	let count=count+1
+	if [ "$isDialog" ]; then
+		PERCENT=$(echo "($count*100)/$TOTAL" | bc)
+		echo $PERCENT
+	fi
+	rm -f $LIST
+
+	for file in ${NODES_ARRAY[@]}; do
+		sort -u -o $file $file
+	done
+	export CONFIG_LOADED="yes"
+	#echo APP_LIST_FILE
+        #cat $APP_LIST_FILE
+        #echo
+        #echo ISPN_LIST_FILE
+        #cat $ISPN_LIST_FILE
+        #echo
+        #echo TC_LIST_FILE
+        #cat $TC_LIST_FILE
+	#echo
+	#echo NODES_LIST_FILE
+	#cat $NODES_LIST_FILE
+}
+
+getAppName(){ # Select appname
+	local position=$1
+	local file=$2
+        if [ $position -le `wc -l $file | awk '{print $1}'` ]; then
+	        app=`head -$position $file | tail -n1`
+        else
+                app=`cat $file`
+        fi
+	echo $app
+}
+
+getServerName(){ # Select ServerName
+	local position=$1
+	if [ $position -lt ${#APPSERVERS[@]} ]; then
+		let position=position-1
+		server_name=${APPSERVERS[$position]}
+	else
+		server_name=${APPSERVERS[@]}
+	fi
+	echo $server_name
+}
+
+getServer(){ # Return server name from given node or app
+	local arg=$1
+        local TYPE
+        case $2 in
+                application)    TYPE='jboss' ;;
+                *)              TYPE=$2 ;;
+        esac
+	# Arg is an app
+	if isApp $arg; then
+		local APP=$arg
+		local tmp=$(mktemp -p $LOCK_DIR)
+		while IFS=';' read _server _node _app; do
+			# If app found and node matches $TYPE then echo $server
+			if [ "$_app" = "$APP" ] && [[ $_node =~ $TYPE ]]; then
+				echo "$_server" >> $tmp
+			fi
+		done < $NODES_LIST_FILE
+		sort -u $tmp
+		rm -f $tmp
+	fi
+}
+
+getAppsServers(){ # fills $apps and $servers variables checking which arg is which
+        while [ $# -gt 0 ]; do
+                if isApp $1 && ! isAppServer $1; then
+                        apps="$apps $1"
+                elif isAppServer $1 && ! isApp $1; then
+                        servers="$servers $1"
+                else
+                        echo "WARNING! $1 is neither app nor server!"
+                fi
+                shift
+        done
+        apps=$(echo $apps | sed -e "s/^ //")
+        servers=$(echo $servers | sed -e "s/^ //")
+        servers=${servers:-${APPSERVERS[@]}}
+        if [ ! "$apps" ]; then
+                echo "ERROR!! Application not specified"
+                usage
+                exit $MISSING_ARGS
+        fi
+}
+
+allServersSelected(){
+	local app=$1
+	shift
+	local servers=$*
+	local tmp1=$(mktemp -p $LOCK_DIR)
+	local tmp2=$(mktemp -p $LOCK_DIR)
+	getServers $app | sort -u > $tmp1
+	echo $servers | tr -t ' ' '\n' | sort -u > $tmp2
+	if diff $tmp1 $tmp2 >/dev/null 2>&1; then
+		export ALLNODES="yes"
+	fi
+	rm -f $tmp1 $tmp2
+}
+
+parseServers(){ # fills $servers with all servers specified that run $app
+	if [ "$1" = "nowarn" ]; then
+		local nowarn="yes"
+		shift
+	fi
+	if [ "$1" = "allservers" ]; then
+		shift
+	fi
+	local args=$*
+        while [ $# -gt 0 ]; do
+                if isAppServer $1; then
+                        servers="$servers $1"
+                elif [ ! $nowarn ]; then
+                        echo_err "WARNING! $1 is not a server!"
+                fi
+                shift
+        done
+	# check that $servers have $app running
+	servers="$(check_servers $app $servers)"
+        allServersSelected $app $servers
+	if [ -n "$args" ] && [ ! "$servers" ]; then
+		echo_err "ERROR!! No valid servers specified: \`$args\`"
+                exit $MISSING_ARGS
+	# If no args specified, default is all nodes selected
+	elif [ -z "$args" ]; then
+		servers=$(getServers $app)
+		export ALLNODES="yes"
+        fi
+}
+
+getNodes(){ # Return nodes given app name and server
+	local APP=$1
+        local TYPE
+        case $2 in
+                application)    TYPE='jboss' ;;
+                *)              TYPE=$2 ;;
+        esac
+	local SERVER=$3
+	while IFS=';' read _server _node _app; do
+		if [ -z "$SERVER" -a "$_app" = "$APP" ] && [[ $_node =~ $TYPE ]]; then
+			echo "$_server;$_node"
+		elif [ -n "$SERVER" -a "$_app" = "$APP" -a "$SERVER" = "$_server" ] && [[ $_node =~ $TYPE ]]; then
+			echo "$_node"
+		fi
+	done < $NODES_LIST_FILE
+}
+
+getJBossNodes(){ # Return node list
+	local TYPE='jboss'
+	while IFS=';' read _server _node _app; do
+		if [[ $_node =~ $TYPE ]]; then
+			echo "$_node: $_app@$_server"
+		fi
+	done < $NODES_LIST_FILE
+}
+
+getInfinispanNodes(){ # Return node list
+	local TYPE='infinispan'
+	while IFS=';' read _server _node _app; do
+		if [[ $_node =~ $TYPE ]]; then
+			echo "$_node: $_app@$_server"
+		fi
+	done < $NODES_LIST_FILE
+}
+
+getRedisNodes(){ # Return node list
+	local TYPE='redis'
+	while IFS=';' read _server _node _app; do
+		if [[ $_node =~ $TYPE ]]; then
+			echo "$_node: $_app@$_server"
+		fi
+	done < $NODES_LIST_FILE
+}
+
+getTerracottaNodes(){ # Return node list
+	local TYPE='terracotta'
+	while IFS=';' read _server _node _app; do
+		if [[ $_node =~ $TYPE ]]; then
+			echo "$_node: $_app@$_server"
+		fi
+	done < $NODES_LIST_FILE
+}
+
+checkServers(){ # Check server list
+	local arg_servers=$*
+	local valid_servers
+	local any_found
+	for arg_server in $arg_servers; do
+		local found
+		for server in ${APPSERVERS[@]}; do
+			if [ $arg_server = $server ] ; then
+				any_found="yes"
+				found="yes"
+				valid_servers="$valid_servers $server"
+			fi
+		done
+		if [ ! $found ]; then
+			echo_err "WARNING! $arg_server is NOT a valid server!"
+		fi
+		unset found
+	done
+	if [ ! $any_found ]; then
+		#echo_err "No valid servers found in args: \`$arg_servers\`"
+		return 1
+	fi
+	echo $valid_servers | sed -e "s/^ //"
+}
+
+getServers(){ # Return server list for $APP
+	local APP=$1
+	for server in ${APPSERVERS[@]}; do
+		local app=$(getApp $server) 
+		if [ "$app" = "$APP" ]; then
+			echo $server
+		fi
+	done
+}
+
+getAppServers(){ # Return server list
+	for server in ${APPSERVERS[@]}; do
+		echo $server
+	done
+}
+
+getISPNApps(){ # Return ISPN app list
+	while IFS=';' read _server _node _app; do
+		if [[ "$_node" =~ "infinispan" ]]; then
+			local _servers=$(getServer $_app 'infinispan' | tr -t '\n' ' ')
+			echo "$_app: $_servers"
+		fi
+	done < $NODES_LIST_FILE | sort -u
+}
+
+getTCApps(){ # Return TC app list
+	while IFS=';' read _server _node _app; do
+		if [[ "$_node" =~ "terracotta" ]]; then
+			local _servers=$(getServer $_app 'terracotta' | tr -t '\n' ' ')
+			echo "$_app: $_servers"
+		fi
+	done < $NODES_LIST_FILE | sort -u
+}
+
+getApps(){ # Return app list
+	while IFS=';' read server node app; do
+		if [[ "$node" =~ "jboss" ]]; then
+			local servers=$(getServer $app 'application' | tr -t '\n' ' ')
+			echo "$app: $servers"
+		fi
+	done < $NODES_LIST_FILE | sort -u
+}
+
+getApp(){ # Return app name given server
+	local SERVER=$1
+	while IFS=';' read server node app; do
+		if [ "$server" = "$SERVER" -a "$node" = "jboss" ]; then
+			echo "$app"
+			break
+		fi
+	done < $NODES_LIST_FILE
+}
+
+getTC(){ # Return TC nodes for given app
+	local APP=$1
+	while IFS=';' read server node app; do
+		if [ "$app" = "$APP" ] && [[ $node =~ ^terracotta ]]; then
+			echo "$server;$node"
+		fi
+	done < $NODES_LIST_FILE
+}
+
+getISPN(){ # Return ISP nodes for given app
+	local APP=$1
+	while IFS=';' read server node app; do
+		if [ "$app" = "$APP" -a $node = "infinispan" ]; then
+			echo "$server;$node"
+		fi
+	done < $NODES_LIST_FILE
+}
+
+hasTC(){ # Returns wether app has a TC configured or not
+	local APP=$1
+	while IFS=';' read server app; do
+		if [ "$app" = "$APP" ]; then
+			return 0
+		fi
+	done < $TC_LIST_FILE
+	return 1
+}
+
+hasISP(){ # Returns wether app has a ISP configured or not
+	local APP=$1
+	while IFS=';' read server app; do
+		if [ "$app" = "$APP" ]; then
+			return 0
+		fi
+	done < $ISPN_LIST_FILE
+	return 1
+}
+
+hasCache(){ # Returns wether app has a configured cache or not
+	local APP=$1
+	while IFS=';' read server node app; do
+		if [ "$app" = "$APP" ] && ( [[ $node =~ ^terracotta ]] || [ $node = "infinispan" ] ); then
+			return 0
+		fi
+	done < $NODES_LIST_FILE
+	return 1
+}
+
+isNumber(){ # checks if arg is a number
+        local arg=$1
+        if [[ $arg =~ ^[0-9]+$ ]]; then
+                return 0
+        else   
+                return 1
+        fi
+}
+
+isAppServer(){ # checks if arg is a server
+	local SERVER=$1
+	for server in ${APPSERVERS[@]}; do
+		if [ "$SERVER" = $server ]; then
+			return 0
+		fi
+	done
+	return 1
+}
+
+isApp(){ # checks if arg is an app
+	local APP=$1
+	while IFS=';' read server _node _app; do
+		if [ "$_app" = "$APP"  ] && [[ $_node =~ ^jboss ]]; then
+			return 0
+		fi
+	done < $NODES_LIST_FILE
+	return 1
+}
+
+#isNode(){ # checks if arg is a node
+#	node_app=$1
+#	if [[ $node_app =~ jboss_* ]]; then
+#		return 0
+#	else
+#		return 1
+#	fi
+#}
+
+askUser(){ # returns "yes" or "no"
+        read -p "Are you sure? (yes/no) " answer
+        while [ "$answer" != "yes" ] && [ "$answer" != "no" ]; do
+                read -p "Sorry. Incorrect answer. Try again (yes/no) " answer
+        done
+        echo "$answer"
+}
+
+check_arg(){ # Check if arguments are ok or show
+	local min_arg=$1
+	shift
+        local msg=$1
+        shift
+	local arg_no=$#
+        local arg=$*
+        if [ -z "$arg" ] || [ $arg_no -lt $min_arg ]; then
+                if [ "$msg" ]; then echo -e "Usage: $SCRIPTNAME $msg" ; fi
+		# rumboctl_cmd usage
+		usage
+                return $MISSING_ARGS
+        fi
+}
+
+check_servers(){ # Check and return servers that run $APP
+	if [ "$1" = "nowarn" ]; then
+		local nowarn="yes"
+		shift
+	fi
+	local APP=$1
+	shift
+	local SERVERS=$*
+	local servers
+	for server in $SERVERS; do
+		local app=$(getApp $server)
+		if [ ! $nowarn ] && [ "$app" != "$APP" ]; then
+			echo_err "WARNING! $server does NOT run $APP"
+			continue
+		else
+			servers="$servers $server"
+		fi
+	done
+	servers=$(echo $servers | sed -e "s/^ //")
+	echo $servers
+}
+
+echo_err(){
+	echo "$@" 1>&2;
+}
+
+check_nodes(){ # Return $nodes that have $app running, warn about the rest as $nodes don't run $app
+	local APP=$1
+	shift
+	local NODES=$*
+	local nodes
+	for node in $NODES; do
+		local app=$(getApp $node)
+		if [ "$APP" != "$app" ]; then
+			echo_err "WARNING! $node is NOT running $APP "
+		else
+			nodes="$nodes $node"
+		fi
+	done
+	echo $nodes | sed -e "s/^ //"
+}
+
+validate_nodes(){
+	local nodes=$*
+	local validated_nodes
+	local TYPE='jboss'
+	local found
+	for node in $nodes; do
+		while IFS=';' read _server _node _app; do
+			if [ $_node = $node  ] && [[ $_node =~ $TYPE ]]; then
+				validated_nodes="$validated_nodes $node"
+				found="yes"
+			fi
+		done < $NODES_LIST_FILE
+		if [ ! $found ]; then
+			echo_err "WARNING! node \`$node\` doesn't exist"
+		fi
+		unset found
+	done
+	validated_nodes=$(echo $validated_nodes | sort -u | sed -e "s/^ //")
+	if [ ! "$validated_nodes" ]; then
+		echo_err "WARNING! No valid nodes specified. Exiting"
+		exit $NON_EXISTANT_NODE
+	fi
+	echo $validated_nodes
+}
+
+validate_apps(){
+	local apps=$*
+	local validated_apps
+	local TYPE='jboss'
+	local found
+	for app in $apps; do
+		while IFS=';' read _server _node _app; do
+			if [ $_app = $app  ] && [[ $_node =~ $TYPE ]]; then
+				validated_apps="$validated_apps $app"
+				found="yes"
+			fi
+		done < $NODES_LIST_FILE
+		if [ ! $found ]; then
+			echo_err "WARNING! app \`$app\` doesn't exist"
+		fi
+		unset found
+	done
+	validated_apps=$(echo $validated_apps | sort -u | sed -e "s/^ //")
+	if [ ! "$validated_apps" ]; then
+		echo_err "WARNING! No valid apps specified. Exiting"
+		exit $NON_EXISTANT_APP
+	fi
+	echo $validated_apps | tr -t ' ' '\n' | sort -u | tr -t '\n' ' '
+}
+
+print_comment(){
+	if [ "$isDialog" ]; then
+		echo XXX
+	fi
+}
+
+print_percent(){
+	if [ "$isDialog" ]; then
+		let PERCENT=(count*100)/TOTAL
+		echo $PERCENT
+	fi
+}
+
+printblanks(){ # prints text filling the specified number of characters with blanks after text
+        local word="$1"
+        local length="$2"
+        if [ "$word" = "###ENTER###" ]; then
+                OUTPUT=$OUTPUT"\n"
+                return 0
+        fi
+        OUTPUT=$OUTPUT"$word"
+        wordlength=$(echo "$word" | wc -c)
+        while [ $wordlength -lt $length ]; do
+                OUTPUT="$OUTPUT "
+                ((++wordlength))
+        done
+}
+
+### Centreon/Nagios functions
+downtime(){ # set 1 hour downtime by default TODO: delete downtime
+	local ARG=$1
+	local TOTAL=1
+	local count=0
+	if [ "$isDialog" ]; then
+		PERCENT=$(echo "($count*100)/$TOTAL" | bc)
+		echo $PERCENT
+	fi
+	if isNode $ARG; then
+		output=$($DEBUG ssh $CONNECTION_MGMT_SERVER "downtime_node $ARG \"now\" \"now +1 hour\"" | tr -t '\n' '#')
+	else
+		
+		output=$($DEBUG ssh $CONNECTION_MGMT_SERVER "downtime $ARG \"now\" \"now +1 hour\"" | tr -t '\n' '#')
+	fi
+	if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+	local count=1
+	if [ "$isDialog" ]; then echo XXX ; fi
+	echo -e $output | tr -t '#' '\n' | tee -a $TMP
+	if [ "$isDialog" ]; then
+		echo XXX
+		PERCENT=$(echo "($count*100)/$TOTAL" | bc)
+		echo $PERCENT
+	fi
+}
+
+### Maintenance functions 
+hasMaintenance(){ # returns wether provided app has maintenance page or not
+	local APP=$1
+	if ssh $CONNECTION_MGMT_SERVER /rmb/bin/mant_set.sh | grep '<app>' | sed -e "s/^<app>:== //" -e "s/(incluye hoteles) //" -e "s/ |//g" | tr -t ' ' '\n' | grep -q ^$APP$; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+isMaintenance(){ # returns true if provided app is in maintenance mode
+	local APP=$1
+	if hasMaintenance $APP; then
+		ssh $CONNECTION_MGMT_SERVER /rmb/bin/mant_set.sh status | \
+			while read line ; do
+				if [ "$_print" ] && [[ "$line" =~ ^$APP$ ]]; then
+					return 0
+				fi
+				if [ "$line" = "Maintenance mode for" ]; then
+					local _print=1
+				fi
+			done
+	else
+		return 2
+	fi
+	return 1
+}
+# NOT USED
+enable_mant(){ # enables maintenance mode for specified app
+	local APP=$1
+	if isMaintenance $APP; then
+		echo "$APP is already in maintenance mode!!"
+	elif [ $? = 1 ]; then
+		$DEBUG ssh $CONNECTION_MGMT_SERVER /rmb/bin/mant_set.sh enable $APP
+	fi
+}
+# NOT USED
+disable_mant(){ # disables maintenance mode for specified app
+	local APP=$1
+	if isMaintenance $APP; then
+		$DEBUG ssh $CONNECTION_MGMT_SERVER /rmb/bin/mant_set.sh disable $APP
+	elif [ $? = 1 ]; then
+		echo "$APP is already OUT of maintenance mode!!"
+	fi
+}
+# NOT USED
+info_mant(){ # returns maintenance status
+	local tmp=$(mktemp -p $LOCK_DIR)
+	ssh $CONNECTION_MGMT_SERVER /rmb/bin/mant_set.sh status | \
+		while read line ; do
+			if [ "$_print" ] && [ "$line" ]; then
+				echo "\n\t$line" >> $tmp
+			fi
+			if [ "$line" = "Maintenance mode for" ]; then
+				_print=1
+			fi
+		done
+	echo -e "\nMaintenance mode for:$(cat $tmp)"
+	rm -f $tmp
+}
+
+### Apache functions
+isInBalancer(){ # checks if node is in or out of the balancer
+	local APACHE=$1
+	local NODE=$2
+	local APP=$(getApp $NODE)
+	local STATUS=$(wget -O - http://$APACHE/modjk_rumbo/?cmd=show\&w=balancer_$APP\&sw=$NODE\&mime=prop 2>/dev/null | grep activation | cut -d'=' -f2)
+	if [ "$STATUS" = "ACT" ]; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+isBalancerConfigured(){
+	local APP=$1
+	# We assume all workers are configured in every Apache
+	local APACHE=${WEBSERVERS[0]}
+	local STATUS=$(wget -O - http://$APACHE/modjk_rumbo/?cmd=show\&w=balancer_$APP\&mime=prop 2>/dev/null | grep 'worker.result.type' | cut -d'=' -f2)
+	if [ $STATUS = "OK" ]; then
+		return 0
+	fi
+	return 1
+}
+
+cleanTemps(){
+	rm -f $REPORT $NODES_LIST_FILE $APP_LIST_FILE $TC_LIST_FILE $ISPN_LIST_FILE $REDIS_LIST_FILE
+}

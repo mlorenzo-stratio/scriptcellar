@@ -1,0 +1,26 @@
+#!/bin/bash
+
+dec2hdec(){
+	n=$1
+	hn=$(echo "obase=16; $1" | bc | tr -d '\n')
+	if [ $(echo -n $hn | wc -c) = 1 ]; then
+		hn="0$hn"
+	fi
+	echo -n $hn
+}
+
+IP=$1
+IFS='.\n'
+
+if [ -z "$IP" ]; then
+	echo "Usage: $0 A.B.C.D"
+	exit 1
+fi
+
+echo -n "52:54:"
+{
+for num in $IP; do
+	dec2hdec $num
+	echo -n ":"
+done
+} | sed -e "s/:$/\n/"

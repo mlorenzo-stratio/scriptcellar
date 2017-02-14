@@ -1,0 +1,231 @@
+#!/bin/bash
+
+UUIDlist=$(mktemp)
+MAClist=$(mktemp)
+DEBUG=${1:-"0"}
+
+printblanks(){
+        local word="$1"
+        local length="$2"
+        if [ "$word" = "###ENTER###" ]; then
+                OUTPUT=$OUTPUT"\n"
+                return 0
+        fi
+        OUTPUT=$OUTPUT"$word"
+        wordlength=$(echo "$word" | wc -c)
+        while [ $wordlength -lt $length ]; do
+                OUTPUT="$OUTPUT "
+                ((++wordlength))
+        done
+}
+
+isAlive(){
+	local host=$1
+	if ping -c1 $host -W 1 > /dev/null 2>&1; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+addUUID(){
+	local uuid=$1
+	if ! grep -qE ^$uuid$ $UUIDlist; then
+		echo $uuid >> $UUIDlist
+		return 0
+	else
+		return 1
+	fi
+}
+
+addMAC(){
+	local vm=$1
+	local mac=$2
+	if ! grep -qE ", $mac$" $MAClist; then
+		echo $vm, $mac >> $MAClist
+		return 0
+	else
+		return 1
+	fi
+}
+
+declare -a ssh_array ssh_array2 ssh_array3 output_array output_array2 output_array3
+command="LC_ALL=C virsh list --all --title"
+
+for id in $(seq 4 6); do
+	output_array[$id]=$(mktemp)
+        ssh "madup3$id" "$command" | grep -E "^ [0-9-]+" | sed -e "s/^[[:space:]]*[0-9-]*[[:space:]]*\([a-z_0-9-]*\)[[:space:]]*\([a-z ]*\)[[:space:]]* [a-z ]*/\1|\2|/" -e "s/[[:space:]]*|/|/g" > ${output_array[$id]} &
+        ssh_array[$id]=$!
+done
+
+vm_no=1
+for i in $(seq 4 6); do
+	backIFS=$IFS
+	IFS=$'\n'
+	wait ${ssh_array[$i]}
+	for line in $(cat ${output_array[$i]}); do
+		vm=$(echo $line | cut -d '|' -f1)
+		state=$(echo $line | cut -d '|' -f2)
+		title=$(echo $line | cut -d '|' -f3)
+		output_array2[$vm_no]=$(mktemp)
+		ssh madup3$i vm=$vm 'bash -s' <<'ENDSSH' > ${output_array2[$vm_no]} &
+			echo -n "$vm|"
+		        date | sed -e "s/^.*[0-9]* \([0-9]*:[0-9]*:[0-9]*\).*$/\1/" | tr -t '\n' '|'
+		        grep \.img /etc/libvirt/qemu/$vm.xml -B1 | head -1 | grep raw |  sed -e "s/^.*\(cache='.*'\).*$/\1/" | tr -t '\n' '|'
+		        grep uuid /etc/libvirt/qemu/$vm.xml | sed -e "s/^.*<uuid>\(.*\)<\/uuid>.*$/\1/" | tr -t '\n' '|'
+		        grep mac\ address /etc/libvirt/qemu/$vm.xml | cut -d \' -f2
+ENDSSH
+		
+        	ssh_array2[$vm_no]=$!
+		[ $DEBUG = 1 ] && echo "ssh_array2[$vm_no]=${ssh_array2[$vm_no]}"
+		
+        	ssh_array3[$vm_no]="-1"
+		output_array3[$vm_no]=$(mktemp)
+		if [[ ! "$state" =~ "shut off" ]] && isAlive $vm; then
+			ssh $vm vm=$vm 'bash -s' <<'ENDSSH' > ${output_array3[$vm_no]} &
+				echo -n "$vm|"
+				# getDate
+				out=$(date)
+			        if [ $? != 0 ]; then
+			                echo -n "<error>|"
+			        else
+			                echo -n "$out" | sed -e "s/^.*[0-9]* \([0-9]*:[0-9]*:[0-9]*\).*$/\1|/"
+			        fi
+	
+				# getNTP
+			        tmp=$(mktemp)
+	       			if [ ! -e /usr/sbin/ntpq ]; then
+					exit_code=1
+				else
+					ntpq -pn 2>&1 > $tmp
+					exit_code=$?
+				fi
+			        if [ $exit_code != 0 ]; then
+			                echo -n "<error>|"
+			        elif grep ^\* $tmp -q || grep ^+ $tmp -q; then
+			                echo -n "synced("
+					if grep -q ^\* $tmp; then
+				                grep ^\* $tmp | sed -e "s/^\*\([0-9]*\.[0-9]*\.[0-9]*\.[0-9]*\).*$/\1/" | tr -d '\n'
+				                echo -n ")|"
+					elif grep -q ^+ $tmp; then
+				                grep ^+ $tmp | sed -e "s/^\*\([0-9]*\.[0-9]*\.[0-9]*\.[0-9]*\).*$/\1/" | tr -d '\n'
+				                echo -n ")|"
+					fi
+			        elif grep -q "Connection refused" $tmp ;then
+			                echo -n "NTP stopped|"
+			        else
+			                echo -n "NOT synced("
+			                grep "^ [0-9]*\.[0-9]*\.[0-9]*\.[0-9]*" $tmp | sed -e "s/^ \([0-9]*\.[0-9]*\.[0-9]*\.[0-9]*\).*$/\1/" | head -1 | tr -d '\n'
+			                echo -n ")|"
+			        fi
+			        rm -f $tmp
+	
+				# getAcpid
+			        rpm -q acpid > /dev/null 2>&1
+			        exit_status=$?
+			        if [ "$exit_status" = 0 ]; then
+			                echo -n "yes"
+			        else
+			                echo -n "NO"
+			        fi
+ENDSSH
+	        	ssh_array3[$vm_no]=$!
+		fi
+		[ $DEBUG = 1 ] && echo "ssh_array3[$vm_no]=${ssh_array3[$vm_no]}"
+		((vm_no++))
+	done
+	IFS=$backIFS
+done
+
+OUTPUT=""
+printblanks "Host" 15
+printblanks "VM" 25
+printblanks "Status" 15
+printblanks "Description" 35
+printblanks "VM Date" 15
+printblanks "Host date" 15
+printblanks "NTP" 26
+printblanks "ACPID" 15
+printblanks "Cache" 10
+printblanks "UUID" 10
+printblanks "MAC" 25
+printblanks "###ENTER###"
+printblanks "---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------" 200
+printblanks "###ENTER###"
+
+vm_no=1
+for i in $(seq 4 6); do
+	backIFS=$IFS
+	IFS=$'\n'
+	for line in $(cat ${output_array[$i]}); do
+		vm=$(echo $line | cut -d '|' -f1)
+		state=$(echo $line | cut -d '|' -f2)
+		title=$(echo $line | cut -d '|' -f3)
+		[ $DEBUG = 1 ] && echo "wait vm=$vm ssh_array2[$vm_no]=${ssh_array2[$vm_no]}"
+		wait ${ssh_array2[$vm_no]}
+		host_date=$(grep ^$vm\| ${output_array2[$vm_no]} | cut -d '|' -f2)
+		cache=$(grep ^$vm\| ${output_array2[$vm_no]} | cut -d '|' -f3)
+		uuid=$(grep ^$vm\| ${output_array2[$vm_no]} | cut -d '|' -f4)
+		mac=$(grep ^$vm\| ${output_array2[$vm_no]} | cut -d '|' -f5)
+		date="---"
+		ntp="---"
+		acpid="---"
+		[ $DEBUG = 1 ] && echo "wait vm=$vm ssh_array3[$vm_no]=${ssh_array3[$vm_no]}"
+		if [[ ! "$state" =~ "shut off" ]] && isAlive $vm; then
+			wait ${ssh_array3[$vm_no]}
+			date=$(grep ^$vm\| ${output_array3[$vm_no]} | cut -d '|' -f2)
+			ntp=$(grep ^$vm\| ${output_array3[$vm_no]} | cut -d '|' -f3)
+			acpid=$(grep ^$vm\| ${output_array3[$vm_no]} | cut -d '|' -f4)
+		fi
+
+		if [[ "$state" =~ "shut off" ]]; then
+			date="---"
+			ntp="---"
+			acpid="---"
+		fi
+		if addUUID $uuid; then
+			uuid="OK"
+		else
+			uuid="DUP!"
+		fi
+	
+		if [ "$cache" = "cache='none'" ]; then
+			cache="OK"
+		else
+			cache="NOT none!"
+		fi
+	
+		if addMAC $vm $mac; then
+			mac="OK"
+		else
+			mac="DUP! ($(grep ", $mac$" $MAClist | tr -d '\n'))"
+		fi
+	
+		printblanks "madup3$i" 15
+		printblanks "$vm" 25
+		printblanks "$state" 15
+		printblanks "$title" 35
+		printblanks "$date" 15
+		printblanks "$host_date" 15
+		printblanks "$ntp" 26
+		printblanks "$acpid" 15
+		printblanks "$cache" 10
+		printblanks "$uuid" 10
+		printblanks "$mac" 25
+		printblanks "###ENTER###"
+		((vm_no++))
+	done
+	IFS=$backIFS
+done
+
+echo -e "$OUTPUT"
+
+rm -f $UUIDlist $MAClist
+until [ $vm_no = 1 ]; do
+	rm -f ${output_array2[$vm_no]}
+	rm -f ${output_array3[$vm_no]}
+	((vm_no--))
+done
+for i in $(seq 4 6); do
+	rm -f ${output_array[$i]}
+done

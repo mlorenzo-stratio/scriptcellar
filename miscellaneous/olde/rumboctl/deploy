@@ -1,0 +1,83 @@
+#!/bin/bash
+
+WARS="/opt/prdrmbw/bin/DEPLOYMENT/WARS"
+JBOSS_BASE="/ama/wh/PRD/rmb/jboss/phoenix/server"
+JAVA_HOME="/ama/wh/PRD/rmb/binaries/java/current"
+JBOSS_DEPLOYMENT="deploy_app"
+JBOSS_WORK="work"
+JBOSS_TMP="tmp"
+_USER="rumbo"
+SUDO="sudo -u jboss"
+
+app=$1
+shift
+nodes=$*
+
+checkUser(){
+        if [ "$USER" != "$_USER" ]; then
+                echo "User $USER is NOT allowed to execute this script. Only $_USER"
+                exit 2
+        fi
+}
+
+isRunning(){
+        local NODE_NAME=$1
+        JBOSS_PID=$(ps -ef | grep -v grep |grep -v  jboss_ctl.  | grep $NODE_NAME | grep bin/java | awk '{print $2 }')
+        if [ -z "$JBOSS_PID" ]; then
+                return 1
+        else
+                return 0
+        fi
+}
+
+isDisabled(){
+        local NODE=$1
+        if [ -e "$JBOSS_DIR/$NODE/.maintenance" ]; then
+                true
+        else
+                false
+        fi
+}
+
+if [ -z "$nodes" ] || [ -z "$app" ]; then
+	echo "$0: missing operand"
+	echo "Usage: $0 <app> <node1 node2 ... nodeN>"
+	exit 1
+else
+	checkUser
+	TMP=$(mktemp -d -p /dev/shm)
+	chmod 755 $TMP
+	cd $TMP
+	echo "Deploying $app on $HOSTNAME:"
+	echo -en "\t- Extracting application $app from WAR... "
+	cp $WARS/$app/$app.war $TMP && \
+	$JAVA_HOME/bin/jar xf $app.war && \
+	rm -f $TMP/$app.war > /dev/null 2>&1 && echo  "done." || { echo -e "error!\n\n" ; exit 2; }
+	for node in $nodes; do
+		if isRunning $node; then
+			echo -e "\t- Skipping running node $node."
+			continue
+		fi
+		if isDisabled $node; then
+			echo -e "\t- Skipping disabled node $node."
+			continue
+		fi
+		echo -en "\t- Deleting node $node old deployment... "
+		$SUDO rm -rf $JBOSS_BASE/$node/$JBOSS_DEPLOYMENT/$app.war \
+		       $JBOSS_BASE/$node/$JBOSS_WORK/* \
+		       $JBOSS_BASE/$node/$JBOSS_TMP/* > /dev/null 2>&1 && echo "done." || { echo -e "error!\n\n" ; exit 2; }
+
+		echo -en "\t- Copying WAR to node $node... "
+		$SUDO mkdir $JBOSS_BASE/$node/$JBOSS_DEPLOYMENT/$app.war && \
+			$SUDO cp -Rp $TMP/* $JBOSS_BASE/$node/$JBOSS_DEPLOYMENT/$app.war/ && echo "done." || \
+			{ echo "error!" ; exit 2; }
+	
+		### touch control timestamp file
+		$SUDO touch $JBOSS_BASE/$node/$JBOSS_DEPLOYMENT/.control
+		DATE="$(date -R)"
+	        $SUDO find $JBOSS_BASE/$node/$JBOSS_DEPLOYMENT/ -exec touch -d "$DATE" {} \;
+		### 
+	done
+	echo
+	rm -fr $TMP
+fi

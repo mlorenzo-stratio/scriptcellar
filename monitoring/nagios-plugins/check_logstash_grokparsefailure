@@ -1,0 +1,77 @@
+#!/bin/bash
+
+OK=0
+WARNING=1
+CRITICAL=2
+UNKNOWN=3
+
+HOST=$1
+WARNING_THRESHOLD=${2:-10}
+CRITICAL_THRESHOLD=${3:-100}
+
+HOST="http://$HOST:9200"
+INDEXES="logstash jboss provider"
+from=$(date -d "now -5 minutes" -u +%Y-%m-%dT%T.000Z)
+to=$(date -u +%Y-%m-%dT%T.000Z)
+date=$(date -u +%Y.%m.%d)
+
+exit_value=$OK
+output="Centralized Log parse failures:"
+for index in $INDEXES; do
+        url="$HOST/$index-$date/_count?pretty=true"
+        tmp=$(mktemp -p /dev/shm)
+        curl -XPOST -s "$url" -d "
+        {
+          \"query\": {
+            \"bool\": {
+              \"must\": [
+                {
+                  \"term\": {
+                    \"tags\": \"_grokparsefailure\"
+                  }
+                },
+                {
+                  \"match_all\": {}
+                },
+                {
+                  \"range\": {
+                    \"@timestamp\": {
+                      \"from\": \"$from\",
+                      \"to\": \"$to\"
+                    }
+                  }
+                }
+              ],
+              \"must_not\": [],
+              \"should\": []
+            }
+          },
+          \"from\": 0,
+          \"size\": 0,
+          \"sort\": [],
+          \"facets\": {}
+        }
+        " > $tmp
+        if [ $? != 0 -o -z $tmp ] || ! grep -q '"count"' $tmp; then
+                output="Unable to connect to $url"
+		perfdata="logstash_count=0;$WARNING_THRESHOLD;$CRITICAL_THRESHOLD jboss_count=0;$WARNING_THRESHOLD;$CRITICAL_THRESHOLD provider_count=0;$WARNING_THRESHOLD;$CRITICAL_THRESHOLD"
+                exit_value=$UNKNOWN
+                break
+        fi
+	count=$(grep '"count"' $tmp | sed -e "s/^[^0-9]*\([0-9]*\)[^0-9]*/\1/")
+	if [ $count -ge $CRITICAL_THRESHOLD ]; then
+		exit_value=$CRITICAL
+		output="$output CRITICAL!! registering more than $CRITICAL_THRESHOLD"
+	elif [ $count -ge $WARNING_THRESHOLD -a $exit_value != $CRITICAL ]; then
+		exit_value=$WARNING
+		output="$output WARNING! registering more than $WARNING_THRESHOLD"
+	fi
+        perfdata="$perfdata "$index"_count=$count;$WARNING_THRESHOLD;$CRITICAL_THRESHOLD"
+        perfdata=$(echo $perfdata | sed -e "s/^ //")
+done
+if [ $exit_value = $OK ]; then
+	output="$output registering events"
+fi
+rm -f $tmp
+echo "$output | $perfdata"
+exit $exit_value

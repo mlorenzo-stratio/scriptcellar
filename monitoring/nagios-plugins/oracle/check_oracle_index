@@ -1,0 +1,50 @@
+#!/bin/bash
+
+STATE_OK=0
+STATE_CRITICAL=2
+tmp=$(mktemp)
+
+DB=$1
+PMON=""
+
+if [ $DB = "front" ]; then
+        PMON="RUMPRD"
+elif [ $DB = "back" ]; then
+        PMON="prdrbo"
+else
+	PMON="BMSPRD"
+fi
+
+
+has_pmon(){
+        if ps -fe | grep -v grep | grep -E "ora_pmon_$PMON" -q ; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+HOST="$(echo $HOSTNAME | cut -d '.' -f1)"
+
+if has_pmon ; then
+        sudo -u oracle /usr/local/nagios/libexec/check_index $DB > $tmp
+else
+        if [ "$HOST" = "madup01" ]; then
+                HOST="madup02"
+        else
+                HOST="madup01"
+        fi
+        ssh $HOST sudo -u oracle /usr/local/nagios/libexec/check_index $DB > $tmp
+fi
+
+vcount=$(cat $tmp)
+
+if [ "$vcount" != 0 ]; then
+        echo "INDEX CRITICAL ($HOST): $vcount invalid indexes"
+        rm $tmp
+        exit $STATE_CRITICAL
+else
+        echo "INDEX OK ($HOST): $vcount invalid indexes"
+        rm $tmp
+        exit $STATE_OK
+fi

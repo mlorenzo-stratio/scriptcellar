@@ -1,0 +1,34 @@
+#!/bin/bash
+
+DB=$1
+WARNING_THRESHOLD=$2
+CRITICAL_THRESHOLD=$3
+
+OK=0
+WARNING=1
+CRITICAL=2
+UNKNOWN=3
+
+if [ $# != 3 ]; then
+	echo "No args specified."
+	exit 1
+fi
+
+MESSAGE=$(sudo -u oracle /usr/local/nagios/libexec/check_tnsping $DB | tail -1)
+LATENCY=$(echo $MESSAGE | sed -e "s/^.*(\([^)]*\) msec).*$/\1/")
+EXIT_STATUS=$?
+
+if [ $LATENCY -ge $CRITICAL_THRESHOLD ]; then
+	echo "Oracle IP Scan latency: $MESSAGE CRITICAL | latency="$LATENCY"ms;$WARNING_THRESHOLD;$CRITICAL_THRESHOLD;0"
+	exit $CRITICAL
+elif [ $LATENCY -ge $WARNING_THRESHOLD ]; then
+	echo "Oracle IP Scan latency: $MESSAGE CRITICAL | latency="$LATENCY"ms;$WARNING_THRESHOLD;$CRITICAL_THRESHOLD;0"
+	exit $WARNING
+elif [ $EXIT_STATUS != 0 ]; then
+	echo "Oracle IP Scan latency: $MESSAGE UNKNOWN OUTPUT: $MESSAGE"
+	exit $UNKNOWN
+else
+	echo "Oracle IP Scan latency: $MESSAGE | latency="$LATENCY"ms;$WARNING_THRESHOLD;$CRITICAL_THRESHOLD;0"
+	exit $OK
+fi
+

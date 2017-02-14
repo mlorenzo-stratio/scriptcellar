@@ -1,0 +1,38 @@
+#!/bin/bash
+
+#madus31.phoenix_s51_28.beds-search.4352
+#/usr/local/bin/schedule_svc_downtime.sh madup30 "Beds - phoenix_p65_19" "tomorrow 2:00" "tomorrow 2:40"
+
+NODE="$1"
+START_DFLT="tomorrow 6:00"
+END_DFLT="tomorrow 8:30"
+START="${2-$START_DFLT}"
+END="${3-$END_DFLT}"
+
+start=$START
+end=$END
+
+START=$(echo $START | sed -e "s/ /\\\ /g")
+END=$(echo $END | sed -e "s/ /\\\ /g")
+
+APPLIST="/rmb/data/list_app_services"
+
+if [ $# -lt 1 ]; then
+	echo "Usage: $0 <node> [start_time] [end_time]"
+	echo "       [start_time] and [end_time] default to \"tomorrow 6:00\" and \"tomorrow 8:30\""
+	exit 1
+fi
+
+
+echo "Scheduling downtime ($start - $end) for node $NODE:"
+grep -E "^[^.]*\.$NODE.*[^.]*\." $APPLIST | while IFS='.' read host node appname memory; do
+	if [[ $host =~ ^madus ]]; then
+		continue
+	fi
+	if [ "$node" = "$NODE" ]; then
+		echo -ne "\t- Scheduled downtime for: "
+		APP=${appname^}
+		ssh -n nagios@madup0715 /usr/local/bin/schedule_svc_downtime.sh "$host" "$APP\ -\ $node" "$START" "$END"
+		echo "$node@$host"
+	fi
+done 

@@ -1,0 +1,27 @@
+#!/bin/bash
+
+hdec2dec(){
+	n=$1
+	dn=$(echo "ibase=16; $1" | bc | tr -d '\n')
+	echo -n $dn
+}
+
+MAC=$(echo $1 | tr -t '[[:lower:]]' '[[:upper:]]')
+IFS=':\n'
+
+if [ -z "$MAC" ]; then
+	echo "Usage: $0 AA:BB:CC:DD:EE:FF"
+	exit 1
+fi
+
+{
+h=0
+for num in $MAC; do
+	if [ "$h" != 2 ]; then
+		h=$[ $h + 1 ]
+		continue
+	fi
+	hdec2dec $num
+	echo -n "."
+done
+} | sed -e "s/.$/\n/"

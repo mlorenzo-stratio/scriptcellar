@@ -1,0 +1,133 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME <enable|disable|status> <node1...nodeN>
+	Provides Mod-Jk nodes management
+EOH
+}
+
+balancer_ctl(){ # Gets in/out Apache balancer a given JBoss node
+        local ACTION="$1"
+        local NODE="$2"
+        if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+        local TOTAL=${#WEBSERVERS[@]}
+        local count=0
+        local app=$(getApp $NODE | cut -d';' -f2)
+        local vwa
+        local output
+	log "$action balancer for $NODE... "
+        if ! isBalancerConfigured $app; then
+                output="$output\tINFO: $app is not configured for Apache balancing!"
+		log -a "WARNING!"
+		log "($NODE) $app is not configured for apache balancing!"
+		print_comment
+                echo -e $output | tee -a $TMP
+		print_comment
+                echo >> $TMP
+                return
+        fi
+        case $ACTION in
+                "enable")	vwa=0 ; local msg="Enabling"  ;;
+                "disable")	vwa=1 ; local msg="Disabling" ;;
+                "status")
+                        local header="$NODE ($app) nodes status:"
+                        if [ "$DISABLE_HEADER" = "yes" ]; then
+				print_comment
+                                echo -e $header | tee -a $TMP
+				print_comment
+                                DISABLE_HEADER="done"
+                        fi
+                        for i in $(seq 1 ${#WEBSERVERS[@]}) ; do
+				print_percent
+                                APACHE=${WEBSERVERS[$i-1]}
+				print_percent
+				print_comment
+                                if isInBalancer $APACHE $NODE ; then
+                                        output="\t- $NODE($app)@$APACHE: enabled"
+                                else
+                                        output="\t- $NODE($app)@$APACHE: disabled!"
+                                fi
+                                if [ "$isDialog" ]; then echo -e $header ; fi
+                                echo -e $output | tee -a $TMP
+				print_comment
+				print_percent
+                                let count=count+1
+                        done
+                        ;;
+        esac
+        if [ $vwa ]; then
+                local header="$msg Mod_Jk node $NODE in:"
+                if [ "$DISABLE_HEADER" = "yes" ]; then
+			print_comment
+                        echo -e $header | tee -a $TMP
+			print_comment
+                        DISABLE_HEADER="done"
+                fi
+                for APACHE in ${WEBSERVERS[@]}; do
+			print_comment
+			print_percent
+                        local n=3
+                        while [ $n -gt 0 ]; do
+                                if [ "$action" = "in" ] && isInBalancer $APACHE $NODE; then
+                                        break
+                                elif [ "$action" = "out" ] && ! isInBalancer $APACHE $NODE; then
+                                        break
+                                fi
+                                $DEBUG wget -O - http://$APACHE/modjk_rumbo/?cmd=update\&from=list\&w=balancer_$app\&sw=$NODE\&vwa=$vwa >/dev/null 2>&1
+                                let n=n-1
+                        done
+                        case $ACTION in
+                                "enable")
+                                        if isInBalancer $APACHE $NODE; then
+                                                output="\t- $NODE($app)@$APACHE: done"
+                                        else
+                                                output="\t- $NODE($app)@$APACHE: failed after 3 tries"
+                                        fi
+                                ;;
+                                "disable")
+                                        if ! isInBalancer $APACHE $NODE; then
+                                                output="\t- $NODE($app)@$APACHE: done"
+                                        else
+                                                output="\t- $NODE($app)@$APACHE: failed after 3 tries"
+                                        fi
+                                ;;
+                        esac
+
+			print_comment
+			if [ "$isDialog" ]; then echo -e $header ; fi
+                        echo -e $output | tee -a $TMP
+                        let count=count+1
+			print_comment
+			print_percent
+                done
+        fi
+        echo >> $TMP
+}
+
+check_arg 2 "" $* || exit $?
+action=${1,,}
+shift
+nodes=$*
+case "$action" in
+        in|enable)
+		action="enable"	;;
+	out|disable)
+		action="disable" ;;
+	check|status)
+		action="status" ;;
+        *)
+		usage ; exit $UNKNOWN_OPTION_SPECIFIED ;;
+esac
+retrieve_configuration
+nodes=$(validate_nodes $nodes)
+for node in $nodes; do
+	DISABLE_HEADER="yes" balancer_ctl $action $node
+	echo
+done

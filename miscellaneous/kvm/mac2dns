@@ -1,0 +1,4 @@
+#!/bin/bash
+
+host $(/usr/local/bin/mac2ip $1)
+

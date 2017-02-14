@@ -1,0 +1,24 @@
+#!/bin/bash
+
+vcountsession=0
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+
+WARNING=$1
+CRITICAL=$2
+
+vcountsession=$(sudo -u oracle /usr/local/nagios/libexec/check_session_front | sed -e "s/[^0-9]*\([0-9]*\)[^0-9]*/\1/")
+
+if [ $vcountsession -ge $CRITICAL ]; then
+	echo "SESSIONS CRITICAL: $vcountsession sesiones abiertas | sessions=$vcountsession;$WARNING;$CRITICAL"
+	exit $STATE_CRITICAL
+else 
+	if [ $vcountsession -ge $WARNING ]; then
+		echo "SESSIONS WARNING: $vcountsession sesiones abiertas | sessions=$vcountsession;$WARNING;$CRITICAL"
+		exit $STATE_WARNING
+	else
+		echo "SESSIONS OK: $vcountsession sesiones abiertas | sessions=$vcountsession;$WARNING;$CRITICAL"
+		exit $STATE_OK
+      fi
+fi

@@ -1,0 +1,134 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME <start|stop|restart|kill|info> <app> [<node1...nodeN|server1...serverN>]
+	Provides JBoss nodes management
+EOH
+}
+
+jboss_ctl(){ # JBoss CTL
+        local action=${1,,}
+        shift
+        local app=$1
+        shift
+        local args=$*
+        local PERCENT
+        if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+        if [ -z "$args" ]; then
+                # Build server list
+		local servers=$(getServer $app 'application')
+                local TOTAL=$(echo $servers | tr -t ' ' '\n' | wc -l)
+                local count=0
+                local output
+		log "Performing $action \`$app\` on $servers"
+                for server in $servers; do
+                        print_percent
+                        let count=count+1
+                        if [ "$action" = "waitfornode" ]; then
+                                $DEBUG ssh $server $JBOSS_CTL $app $action $(getNodes $app 'application' $server | tr -t '\n' ' ') | tee -a $TMP
+				local exit_status=$?
+                                sed -i '/XXX/d' $TMP
+				return $exit_status
+                        else
+                                print_comment
+                                $DEBUG ssh $server $JBOSS_CTL $app $action $(getNodes $app 'application' $server | tr -t '\n' ' ') | tee -a $TMP
+                                print_comment
+                        fi
+                        print_percent
+                done
+		log "Finished $action \`$app\` on $servers"
+        else
+		log "Performing $action \`$app\` on $args"
+                # arg may be node or server
+                for arg in $args; do
+                        local TOTAL=1
+                        local count=0
+                        # Operate on node $arg running on $server
+                        if isNode $arg; then
+                                print_percent
+                                local node=$arg
+                                local server=$(getServer $arg 'application')
+                                if [ "$action" = "waitfornode" ]; then
+                                        $DEBUG ssh $server "$JBOSS_CTL $app $action $node" | tee -a $TMP
+					local exit_status=$?
+                                        sed -i '/XXX/d' $TMP
+					return $exit_status
+                                else
+					log -n "$action JBoss \`$app\` node $node on $server..."
+                                        print_comment
+                                        $DEBUG ssh $server "$JBOSS_CTL $app $action $node" | tee -a $TMP
+					if [ $? != 0 ]; then
+                                                log -a "ERROR!!"
+                                                log "output: $output"
+                                        else
+                                                log -a "OK"
+                                        fi
+                                        print_comment
+                                fi
+                        # Operate on nodes running $app on $server
+                        else
+                                print_percent
+                                local server=$arg
+                                if [ "$action" = "waitfornode" ]; then
+                                        $DEBUG ssh $server "$JBOSS_CTL $app $action $(getNodes $app 'application' $server | tr -t '\n' ' ')" | tee -a $TMP
+					local exit_status=$?
+                                        sed -i '/XXX/d' $TMP
+					return $exit_status
+                                else
+                                        print_comment
+					log -n "$action JBoss \`$app\` nodes on $server..."
+                                        $DEBUG ssh $server "$JBOSS_CTL $app $action $(getNodes $app 'application' $server | tr -t '\n' ' ')" | tee -a $TMP
+					if [ $? != 0 ]; then
+                                                log -a "ERROR!!"
+                                                log "output: $output"
+                                        else
+                                                log -a "OK"
+                                        fi
+                                        print_comment
+                                fi
+                        fi
+                        let count=count+1
+                        print_percent
+                done
+		log "Finished $action \`$app\` on $args"
+        fi
+        local _tmp=$(mktemp -p /dev/shm)
+        uniq $TMP $_tmp
+        cp $_tmp $TMP
+        rm -f $_tmp
+        echo >> $TMP
+}
+
+check_arg 2 "" $* || exit $?
+action=$1
+shift
+app=$1
+shift
+case "$action" in
+        start|stop|restart|info|status|kill|enable|disable|threaddump|heapdump|waitfornode) ;;
+        *)              usage ; exit $UNKNOWN_OPTION_SPECIFIED ;;
+esac
+retrieve_configuration
+if ! isApp $app; then
+	usage
+	exit $NON_EXISTANT_APP
+fi
+getNodesServers $*
+lock $app
+if [ "$action" = "restart" ]; then
+	keep_output="yes"
+        jboss_ctl disable $app $nodes
+        jboss_ctl stop $app $nodes
+        jboss_ctl enable $app $nodes
+        jboss_ctl start $app $nodes
+else   
+        jboss_ctl $action $app $nodes
+fi
+unlock $app

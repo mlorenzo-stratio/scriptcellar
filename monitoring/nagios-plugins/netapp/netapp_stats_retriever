@@ -1,0 +1,59 @@
+#!/bin/bash
+
+SECONDS=20
+TIMES=1
+COMMAND="lun stats -i $SECONDS -c $TIMES"
+TMPDIR="/dev/shm/netapp"
+mkdir -p $TMPDIR/{maddp07,maddp08,fasadm02}
+SERVERS="maddp07 maddp08 fasadm02"
+CONFIG="/usr/local/nagios/libexec/netapp_stats_retriever.cfg"
+source $CONFIG
+declare -a rsh_array rsh_output
+
+store_stats(){
+        local DATA=$1
+        local FILE=$2
+        TMP=$(mktemp -p /dev/shm)
+	if [ ! -e $FILE ]; then
+		echo $DATA >> $FILE
+	elif [ "$(cat $FILE | wc -l)" -ge 3 ]; then
+                tail -2 $FILE > $TMP
+                echo $DATA >> $TMP
+                cp $TMP $FILE
+        else
+                echo $DATA >> $FILE
+        fi
+        rm -fr $TMP
+}
+
+while true ; do
+	cnt=0
+	for server in $SERVERS ; do
+		rsh_output[$cnt]=$(mktemp -p /dev/shm)
+		sudo rsh $server $COMMAND > ${rsh_output[$cnt]} &
+		rsh_array[$cnt]="$server:$!:$(date)"
+		let cnt=(cnt+1)
+	done
+	
+	cnt=0
+	for data in "${rsh_array[@]}"; do
+		server=$(echo "$data" | cut -d':' -f1)
+		pid=$(echo "$data" | cut -d':' -f2)
+		date=$(echo "$data" | sed -e "s/^$server:$pid:\(.*\)$/\1/")
+		datadir="$TMPDIR/$server"
+		LUN_DISKS_string=$(declare -p $server"_LUN_DISKS")
+		eval "declare -A LUN_DISKS="${LUN_DISKS_string#*=}
+		wait $pid
+		#if [ $cnt = 0 ]; then echo $date ; fi
+		grep -vE "(Read|kB)" ${rsh_output[$cnt]} | \
+			while IFS=' ' read read_ops write_ops read write avg_latency queue_length lun; do
+				lun=$(basename $lun | cut -d'.' -f1)
+				if [ -z "${LUN_DISKS[$lun]}" ]; then continue ; fi
+				# store value (leave max 3 values, 3 * 20 secs = 1 minute)
+				store_stats $avg_latency $datadir/$lun
+				#echo "$server:${LUN_DISKS[$lun]} latency: $avg_latency"
+			done
+		rm -fr ${rsh_output[$cnt]}
+		let cnt=(cnt+1)
+	done
+done

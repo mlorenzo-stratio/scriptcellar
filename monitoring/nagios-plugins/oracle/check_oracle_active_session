@@ -1,0 +1,39 @@
+#!/bin/bash
+
+vcountsession=0
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+WARNING=$1
+CRITICAL=$2
+
+has_pmon(){
+        if ps -fe | grep -v grep | grep -E "ora_pmon_prdrbo" -q ; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+HOST=""
+
+if has_pmon ; then
+        HOST=" (madup01)"
+        vcountsession=$(sudo -u oracle /usr/local/nagios/libexec/check_active_session | sed -e "s/[^0-9]*\([0-9]*\)[^0-9]*/\1/")
+else
+        HOST=" (madup02)"
+        vcountsession=$(ssh madup02 sudo -u oracle /usr/local/nagios/libexec/check_active_session | sed -e "s/[^0-9]*\([0-9]*\)[^0-9]*/\1/")
+fi
+
+if [ $vcountsession -ge $CRITICAL ]; then
+	echo "SESSIONS CRITICAL: $vcountsession sesiones activas | active_sessions=$vcountsession;$WARNING;$CRITICAL"
+	exit $STATE_CRITICAL
+else
+	if [ $vcountsession -ge $WARNING ]; then
+		echo "SESSIONS WARNING: $vcountsession sesiones activas | active_sessions=$vcountsession;$WARNING;$CRITICAL"
+		exit $STATE_WARNING
+	else
+		echo "SESSIONS OK: $vcountsession sesiones activas | active_sessions=$vcountsession;$WARNING;$CRITICAL"
+		exit $STATE_OK
+	fi
+fi

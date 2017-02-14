@@ -1,0 +1,35 @@
+#!/bin/bash
+
+HOST="$1"
+PORT="$2"
+URL="$3"
+USER="$4"
+PASSWORD="$5"
+EXPR="$6"
+TIMEOUT="$7"
+WARNING="$8"
+CRITICAL="$9"
+
+NAGIOS_PLUGINS="/usr/local/nagios/libexec"
+
+if [ $# -lt 9 ]; then
+	echo "Usage: $0 <host> <port> <url> <user> <password> <expr> <tcp_warning> <tcp_critical>"
+	exit 3
+fi
+
+OUTPUT=$($NAGIOS_PLUGINS/check_http_content -U http://$USER:$PASSWORD@$HOST:$PORT/"$URL" -m "$EXPR" -t $TIMEOUT)
+EXIT_CODE1=$?
+PERFDATA=$($NAGIOS_PLUGINS/check_tcp -H $HOST -p $PORT -t $TIMEOUT -w $WARNING -c $CRITICAL)
+EXIT_CODE2=$?
+
+EXIT_CODE=0
+if [ "$EXIT_CODE1" = 2 ] || [ "$EXIT_CODE2" = 2 ]; then
+	EXIT_CODE=2
+elif [ "$EXIT_CODE1" = 1 ] || [ "$EXIT_CODE2" = 1 ]; then
+	EXIT_CODE=1
+fi
+
+perfdata=$(echo $PERFDATA | cut -d '|' -f2)
+message=$(echo $PERFDATA | cut -d '|' -f1) 
+echo "$message ($OUTPUT) | $perfdata"
+exit $EXIT_CODE

@@ -1,0 +1,23 @@
+#!/bin/bash
+
+vcountsession=0
+STATE_OK=0
+STATE_WARNING=1
+STATE_CRITICAL=2
+
+vcountsession=$(sudo -u oracle /usr/local/nagios/libexec/check_session_front)
+
+if [ $vcountsession -ge 4500 ]; then
+echo "SESSIONS CRITICAL: $vcountsession sesiones abiertas"
+exit $STATE_CRITICAL
+
+else 
+      if [ $vcountsession -ge 3500 ]; then
+      echo "SESSIONS WARNING: $vcountsession sesiones abiertas"
+      exit $STATE_WARNING
+
+      else
+          echo "SESSIONS OK: $vcountsession sesiones abiertas"
+          exit $STATE_OK
+      fi
+fi

@@ -1,0 +1,119 @@
+#!/bin/bash
+
+ISPN_DIR="/home/jboss_rmb/infinispan"
+ISPN_LOG_DIR="/ama/wh/PRD/rmb/logs/common/infinispan"
+ISPN_LIST=$(find $ISPN_DIR/conf/ ! -path $ISPN_DIR/conf/ -type d -exec basename {} \; )
+_USER="rumbo"
+ISPN_APP="$1"
+ISPN_ACTION="$2"
+ISPN_SERVER=$(hostname)
+
+usage(){
+        echo "Usage: $0 <Infinispan> <start|stop|info|kill>"
+        echo
+        availableInfinispan
+}
+
+availableInfinispan(){
+        echo "Available Infinispan are:"
+        for ispn in $ISPN_LIST; do
+                echo -e "\t- $ispn"
+        done
+}
+
+checkUser(){
+        if [ "$USER" != "$_USER" ]; then
+                echo "User $USER is NOT allowed to execute this script. Only $_USER"
+                exit 2
+        fi
+}
+
+checkInfinispan(){
+        exist=0
+        for infinispan in $ISPN_LIST; do
+                if [ $infinispan = "$ISPN_APP" ]; then
+                        exist=1
+                        break
+                fi
+        done
+        if [ $exist = 0 ]; then
+                echo "Specified Infinispan $ISPN does NOT exist!!"
+                echo
+                availableInfinispan
+                exit 2
+        fi
+}
+
+isRunning(){
+	ISPN_PORT=$(cat $ISPN_DIR/conf/$ISPN_APP/port)
+        COUNT_ISPN=$(ps ax | grep infinispan | grep java | grep $ISPN_APP | grep $ISPN_PORT | grep -v grep | wc -l)
+        if [ "$COUNT_ISPN" != "0" ]; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+link_gc(){
+        sleep 5
+        GC_OUT_CURRENT="$ISPN_LOG_DIR/$ISPN_APP/gc_log/current_gc"
+        GC_OUT_NEW=$(ls -1tr $ISPN_LOG_DIR/$ISPN_APP/gc_log/ | grep -v current_gc | tail -1)
+        sudo -u jboss ln -sf $GC_OUT_NEW $GC_OUT_CURRENT
+}
+
+ispn_start(){
+	if isRunning; then
+                echo "already running!"
+        else
+        	ISPN_PORT=$(cat $ISPN_DIR/conf/$ISPN_APP/port)
+        	echo
+        	echo "Starting $ISPN_APP Infinispan Server in $ISPN_SERVER"
+        	sudo -u jboss sh -c "/usr/bin/nohup $ISPN_DIR/bin/runCustom_$ISPN_APP.sh -r memcached -l 0.0.0.0 -c $ISPN_DIR/conf/$ISPN_APP/infinispan-config.xml -p $ISPN_PORT $ISPN_APP >>$ISPN_LOG_DIR/$ISPN_APP/nohup.out 2>&1 & "
+		link_gc
+	fi
+}
+
+ispn_stop(){
+        ISPN_PORT=$(cat $ISPN_DIR/conf/$ISPN_APP/port)
+        ISPN_PID=$(ps ax | grep infinispan | grep java | grep $ISPN_APP | grep $ISPN_PORT | awk '{print $1}')
+        echo
+        echo "Stopping $ISPN_APP Infinispan Server in $ISPN_SERVER"
+        sudo -u jboss kill $ISPN_PID
+}
+
+ispn_kill(){
+        ISPN_PORT=$(cat $ISPN_DIR/conf/$ISPN_APP/port)
+        ISPN_PID=$(ps ax | grep infinispan | grep java | grep $ISPN_APP | grep $ISPN_PORT | awk '{print $1}')
+        echo
+        sudo -u jboss kill -9 $ISPN_PID
+	echo "$ISPN_APP Infinispan Server KILLED in $ISPN_SERVER"
+}
+
+ispn_info(){
+        echo 
+        echo "Server info for $ISPN_APP Infinispan Server in $ISPN_SERVER:"
+	if isRunning; then
+                ISPN_PORT=$(cat $ISPN_DIR/conf/$ISPN_APP/port)
+        ps -ef | grep infinispan | grep java | grep $ISPN_APP | grep $ISPN_PORT | awk '{print "Is running with PID "$2" since "$5}'
+        else
+		echo "Is NOT running"	
+	fi
+}
+
+
+### MAIN
+if [ -z "$1" -o -z "$2" ]; then
+        usage
+        exit 0
+fi
+
+checkUser
+checkInfinispan
+
+case $ISPN_ACTION in
+start)  ispn_start ;;
+stop)   ispn_stop ;;
+kill)   ispn_kill ;;
+info)   ispn_info ;;
+*)      usage ;;
+esac

@@ -1,0 +1,153 @@
+#!/bin/bash
+
+#terracottactl $action $app $node
+
+TC_DIR="/home/jboss_rmb/bin/terracotta"
+# Autodetect environment STG or PRD
+if [[ $HOSTNAME =~ ^madus[0-9]*$ ]]; then
+	TC_DATA="/ama/wh/STG/rmb/logs/terracotta"
+else
+	TC_DATA="/ama/wh/PRD/rmb/logs/cache/TC"
+fi
+TC_LIST=$(ls -1 $TC_DIR/*/conf/*_tc-config.xml | grep -v current | cut -d'/' -f6,8 | cut -d'_' -f1 | sort)
+_USER="rumbo"
+TC="$1"
+TC_ACTION="$2"
+TC_VERSION=$(echo $1 | cut -d'/' -f1)
+TC_APP=$(echo $1 | cut -d'/' -f2)
+TC_SERVER=$(hostname)
+TC_DELETE="$3"
+
+usage(){
+        echo "Usage: $0 <Terracotta> <start|stop|info|kill> [delete|no-delete]"
+        echo
+        availableTerracottas
+}
+
+availableTerracottas(){
+        echo "Available Terracottas are:"
+        for tc in $TC_LIST; do
+                echo -e "\t- $tc"
+        done
+}
+
+checkUser(){ 
+        if [ "$USER" != "$_USER" ]; then
+                echo "User $USER is NOT allowed to execute this script. Only $_USER"
+                exit 2
+        fi
+}
+
+checkTerracotta(){
+	exist=0
+        for terracotta in $TC_LIST; do
+		if [ $terracotta = "$TC" ]; then
+                        exist=1
+                        break	
+		fi
+	done
+	if [ $exist = 0 ]; then
+		echo "Specified Terracotta $TC does NOT exist!!"
+        	echo
+		availableTerracottas
+		exit 2
+	fi
+}
+
+delete_data(){ 
+	if [ "$TC_DELETE" = "delete" ]; then
+		TC_DELETE="yes"
+	elif [ "$TC_DELETE" = "no-delete" ]; then
+		TC_DELETE="no"
+	else
+        	read -p "Do you want to delete data of $TC_APP Terracotta in $TC_SERVER? (yes/no) " TC_DELETE
+        	while [ "$TC_DELETE" != "yes" ] && [ "$TC_DELETE" != "no" ]; do
+                	read -p "Sorry. Incorrect answer. Try again (yes/no) " TC_DELETE
+        	done
+	fi
+        if [ "$TC_DELETE" = "yes" ]; then
+                echo "Removing server-statistics for "$TC_APP" in "$TC_SERVER"..."
+                sudo -u jboss rm -rf $TC_DATA/$TC_APP/server-statistics
+                echo "Removing server-data for "$TC_APP" in "$TC_SERVER"..."
+                sudo -u jboss rm -rf $TC_DATA/$TC_APP/server-data
+        fi
+}
+
+link_gc() {
+        sleep 5
+        GC_CURRENT="$TC_DATA/$TC_APP/gc_log/current_gc"
+        GC_NEW=$(ls -ltr $TC_DATA/$TC_APP/gc_log/ | grep -v current_gc | tail -1 | awk '{ print $9 }')
+        sudo -u jboss ln -sf $GC_NEW $GC_CURRENT
+}
+
+isRunning(){
+	COUNT_TC=$(ps -ef | grep "$TC_APP"_tc-config.xml | grep -v start-tc-server-custom.sh | grep -v grep | wc -l)
+        if [ "$COUNT_TC" != "0" ]; then
+                return 0
+	else
+		return 1
+        fi
+}
+
+tc_start(){
+	if isRunning; then
+        	echo "already running!"
+	else
+        	echo 
+        	delete_data
+        	MEMORY=$(grep $TC_APP /home/jboss_rmb/bin/memory | awk -F/ '{print $2}' | head -n 1)
+        	echo
+        	echo "Starting $TC_APP Terracotta Server in $TC_SERVER"
+        	sudo -u jboss $TC_DIR/$TC_VERSION/bin/start-tc-server-custom.sh -n "$TC_APP"_TCServer_$TC_SERVER -f $TC_DIR/$TC_VERSION/conf/"$TC_APP"_tc-config.xml $MEMORY $TC_APP >/dev/null 2>&1 &
+        	echo "Waiting for $TC_APP Terracotta Server in $TC_SERVER to start..."
+        	link_gc
+	fi
+}
+
+tc_stop(){
+        echo
+        echo "Stopping $TC_APP Terracotta Server in $TC_SERVER"
+        sudo -u jboss $TC_DIR/$TC_VERSION/bin/stop-tc-server.sh -force -n "$TC_APP"_TCServer_$TC_SERVER -f $TC_DIR/$TC_VERSION/conf/"$TC_APP"_tc-config.xml >/dev/null 2>&1 &
+        echo "Waiting for $TC_APP Terracotta Server in $TC_SERVER to stop..."
+        for i in `echo "1 2 3 4 5 6"`; do
+                sleep 5
+                if [ ! isRunning ]; then
+                        echo "$TC_APP Terracotta Server stopped in $TC_SERVER"
+                        break
+                fi
+        done
+	if isRunning; then
+        	tc_kill
+        fi
+}
+
+tc_kill(){
+	TC_PID=$(ps -ef | grep "$TC_APP"_tc-config.xml | grep -v start-tc-server-custom.sh | grep -v grep | awk '{print $2}')
+        echo
+        sudo -u jboss kill -9 $TC_PID
+        echo "$TC_APP Terracotta Server KILLED in $TC_SERVER"
+}
+
+tc_info(){
+        echo 
+        echo "Server info for $TC_APP Terracotta Server in $TC_SERVER:"
+        PORT=$(grep jmx-port $TC_DIR/$TC_VERSION/conf/"$TC_APP"_tc-config.xml | head -1 | awk -F\> '{print $2}' |awk -F\< '{print $1}')
+        sudo -u jboss $TC_DIR/$TC_VERSION/bin/server-stat.sh -s $TC_SERVER:$PORT 2>/dev/null
+}
+
+### MAIN
+if [ -z "$1" -o -z "$2" ]; then
+        usage
+        exit 0
+fi
+
+checkUser
+checkTerracotta
+
+case $TC_ACTION in 
+start)	tc_start ;;
+stop)	tc_stop ;;
+kill) 	tc_kill ;;
+info) 	tc_info ;;
+*)	usage ;;
+esac

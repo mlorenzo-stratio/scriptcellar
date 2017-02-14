@@ -1,0 +1,111 @@
+#!/bin/bash
+
+DB=$1
+TABLESPACE=$2
+WARNING=$3
+CRITICAL=$4
+
+TMP=$(mktemp)
+
+PMON=""
+
+if [ $DB = "front" ]; then
+        PMON="RUMPRD"
+elif [ $DB = "back" ]; then
+        PMON="prdrbo"
+else
+	PMON="BMSPRD"
+fi
+
+
+has_pmon(){
+        if ps -fe | grep -v grep | grep -E "ora_pmon_$PMON" -q ; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+HOST="$(echo $HOSTNAME | cut -d '.' -f1)"
+EXT_CMD=""
+
+if has_pmon ; then
+        sudo -u oracle /usr/local/nagios/libexec/check_tablespace $DB $TABLESPACE 2>&1 > $TMP
+        if [ $? != 0 ]; then
+                echo "Tablespace ($HOST) - Error checking $TABLESPACE: $(cat $TMP | tr -t '\n' ' ')"
+		echo "Tablespace ($HOST) - Error checking $TABLESPACE: $(cat $TMP | tr -t '\n' ' ')" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+		rm $TMP
+                exit 2
+        fi
+else
+	if [ "$HOST" = "madup01" ]; then
+		HOST="madup02"
+	else	
+		HOST="madup01"
+	fi
+	echo "=======================BEGIN: $(date)===========================" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+	echo "1.1 SSH TO $HOST" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+        ssh $HOST sudo -u oracle /usr/local/nagios/libexec/check_tablespace $DB $TABLESPACE 2>&1 > $TMP
+        if [ $? != 0 ]; then
+		echo "1.2 SSH TO $HOST" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+                echo "Tablespace ($HOST) - Error checking $TABLESPACE: $(cat $TMP | tr -t '\n' ' ')"
+                echo "Tablespace ($HOST) - Error checking $TABLESPACE: $(cat $TMP | tr -t '\n' ' ')" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+		echo -n "ssh $HOST uptime " >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+                ssh $HOST uptime 2>&1 >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+		rm $TMP
+                exit 2
+        fi
+	echo "1.3 SSH TO $HOST: $(cat $TMP | tr -t '\n' ' ')" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+	echo "=======================END: $(date)===========================" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+        echo >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+	EXT_CMD="ssh $HOST"
+fi
+
+DISK_SIZE=$(echo "scale=3; $(cat $TMP | awk '{print $1}') * 1024" | bc)
+FREE=$(echo "scale=3; $(cat $TMP | awk '{print $3}') * 1024" | bc)
+USED=$(echo "scale=3; $(cat $TMP | awk '{print $2}') * 1024" | bc)
+
+WARNING=$(echo "$WARNING * 1024 * 1024" | bc)
+CRITICAL=$(echo "$CRITICAL * 1024 * 1024" | bc)
+
+if [ ! -z $EXT_CMD ]; then
+	echo "2.1 SSH TO $HOST" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+fi
+$EXT_CMD /usr/local/nagios/libexec/check_oracle_extensions $DB $TABLESPACE $(echo "$WARNING / 1024" | bc) $(echo "$CRITICAL / 1024" | bc)
+EXTENSIONS_FOUND=$?
+if [ ! -z $EXT_CMD ]; then
+	echo "2.2 SSH TO $HOST" >> /tmp/_check_tablespace_error_log.$DB.$TABLESPACE
+fi
+
+lt(){
+	num1=$1
+	num2=$2
+	if (( $(echo "${num1} < ${num2}" | bc) == 1 )); then
+		return 0;
+	else
+		return 1;
+	fi
+}
+
+
+if lt $WARNING $FREE || [ $EXTENSIONS_FOUND = 0 ]; then
+        TEXT="Tablespace ($HOST) $TABLESPACE OK - TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB ($(echo "scale=3; $FREE * 100 / $DISK_SIZE" | bc)%)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+        rm $TMP
+        exit 0
+fi
+if lt $FREE $WARNING && lt $CRITICAL $FREE || [ $EXTENSIONS_FOUND = 1 ]; then
+        TEXT="Tablespace ($HOST) $TABLESPACE WARNING - TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB (<$(echo "scale=1; $WARNING / 1024 / 1024" | bc)GB)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+        rm $TMP
+        exit 1
+fi
+if lt $FREE $CRITICAL || [ $EXTENSIONS_FOUND = 2 ]; then
+        TEXT="Tablespace ($HOST) $TABLESPACE CRITICAL - TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB (<$(echo "scale=1; $CRITICAL / 1024 / 1024" | bc)GB)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+        rm $TMP
+        exit 2
+fi
+
+rm $TMP
+exit 0

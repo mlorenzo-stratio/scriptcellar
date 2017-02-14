@@ -1,0 +1,27 @@
+#!/bin/bash
+
+HOST=$1
+NODE_NAME=$2
+PORT=9200
+TIMEOUT=$3
+URL="_nodes/$NODE_NAME?pretty=true"
+USER1="/usr/local/nagios/libexec"
+
+OUTPUT=$($USER1/check_elasticsearch.py -H $HOST)
+STATUS=$?
+
+tmp=$(mktemp -p /dev/shm)
+HOME=~nagios
+lynx -connect_timeout=$TIMEOUT -dump http://$HOST:$PORT/$URL > $tmp 2>&1
+exit_status=$?
+
+# If we cannot connect to 
+if [ $exit_status = 1 ] || ! grep -Eq "\"name\" : \"$NODE_NAME\"" $tmp; then
+	output="Node $NODE_NAME NOT in cluster!!"
+	OUTPUT=$(echo $OUTPUT | sed -e "s/^\([^|]*\) | \(.*\)$/$output | \2/")
+	STATUS=2
+fi
+
+echo $OUTPUT
+rm -fr $tmp
+exit $STATUS

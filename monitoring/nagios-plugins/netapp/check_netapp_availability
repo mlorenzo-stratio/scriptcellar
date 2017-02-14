@@ -1,0 +1,16 @@
+#!/bin/bash
+
+if ! ping -c1 fasadm02 | grep -q "0% packet loss" || \
+   ! ping -c1 maddp07 | grep -q "0% packet loss" || \
+   ! ping -c1 maddp08 | grep -q "0% packet loss"; then
+	touch /dev/shm/netapp/retriever.down
+	exit 1
+elif [ -e /dev/shm/netapp/retriever.down ] && \
+     ( ping -c1 fasadm02 | grep -q "0% packet loss" || \
+       ping -c1 maddp07 | grep -q "0% packet loss" || \
+       ping -c1 maddp08 | grep -q "0% packet loss" ); then
+	rm /dev/shm/netapp/retriever.down
+	pid=$(ps faxuww | grep -E "^nagios.*netapp_stats_retriever$" | grep \/bin\/bash | grep -v grep | tr -s ' ' | cut -d ' ' -f2)
+	kill -9 $pid
+	echo "Restarted NetApp Stats Retriever" | mail -s "NetApp Stats Retriever restarted" systems@rumbo.com
+fi

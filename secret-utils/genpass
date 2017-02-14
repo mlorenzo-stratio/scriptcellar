@@ -1,0 +1,110 @@
+#!/bin/bash -e
+
+# Set debug status
+export VERBOSE="no"
+declare script_home
+script_home="$(dirname "$0")"
+export script_home
+
+### GLOBAL VARIABLES ###
+declare vault_host
+declare vault_port
+declare vault_token
+
+# define passwords variable pointing to passwords folder
+declare passwords="$script_home/passwords"
+
+# source common functions
+source "$script_home/common/funcvars"
+
+
+function help(){
+    cat <<EOH
+Usage: $0 -l <list> -v <vault_host> -p <vault_port> -t <vault_token>
+EOH
+}
+
+
+function main (){
+    while getopts "l:v:p:t:h" opt; do
+        case $opt in
+            l) local list=$OPTARG ;;
+            v) vault_host=$OPTARG ;;       ### GLOBAL VARIABLES ###
+            p) vault_port=$OPTARG ;;       ### GLOBAL VARIABLES ###
+            t) vault_token=$OPTARG ;;      ### GLOBAL VARIABLES ###
+            h|*) help ; exit 1; ;;
+        esac
+    done
+    # set default value if none passed in args
+    list=${list:-"pass.list"}
+
+    # verify files & folders availability
+    verify "f:$list" "f:$passwords/passwords.pass"
+
+    # populate each technology passwords from passwords/passwords.pass
+    source passwords/passwords.pass
+
+    # Define Vault default port if not specified
+    vault_port=${vault_port:-"8200"}
+
+    # Check for correct arguments
+    check_arg "$vault_host" "Vault host"
+    check_arg "$vault_token" "Vault token"
+
+    # declare all needed variables
+    local userid secret tenant tgckey tgcsign data client_id client_secret user pass key keystore n
+    # read $list and process its contents
+    while IFS=$'| ' read json_type password vault_url ; do
+        # Skip blank lines and commented lines
+        if [[ ! $json_type ]] || [[ $json_type =~ ^[[:space:]]*# ]] ; then continue ; fi
+        # create principal and keytab and upload them to Vault
+        password=$(eval echo "$password")
+        ### POR AKI ###
+        case $json_type in
+            keystore_pass) # $password is password
+                data="{ \\\"keystore_pass\\\":\\\"$password\\\" }" ;;
+            keystore_key_pass) # $password is a file
+                source "$password" # populate $keystore and $key_pass
+                data="{ \\\"keystore_pass\\\":\\\"$keystore\\\" , \\\"key_pass\\\":\\\"$key\\\"}" ;;
+            trusted_crt) # $password is a file
+                data="$(sed ':a;N;$!ba;s/\n/\\\\n/g' "$password")" # remove blanks, spaces and special chars
+                data="{ \\\"certificate\\\":\\\"$data\\\" }";;
+            ldap_config)  # $password is a file
+                source "$password" # populate $user and $pass
+                data="{ \\\"user\\\":\\\"$user\\\", \\\"pass\\\":\\\"$pass\\\" }" ;;
+            gosec-mgmt-oauth) # $password is a file
+                source "$password" # populate $client_id and $client_secret
+                data="{ \\\"$client_id\\\":\\\"$(echo "$client_secret" | base64)\\\" }" ;;
+            oauth_clients) # $password is a file
+                data="{"
+                while read pass ; do
+                    let n+=1
+                    data+=" \\\"$n\\\": \\\"$pass\\\","
+                done < "$password"
+                data=${data%,*} # remove last ,
+                data+=" }" ;;
+            tgc_enc) # $password is a file
+                source "$password" # populate $tgckey and $tgcsign
+                data="{ \\\"tgc.encryption.key\\\":\\\"$tgckey\\\", \\\"tgc.signing.key\\\":\\\"$tgcsign\\\" }" ;;
+            token) # $password is password
+                token=$(cat "$password") # read & store token
+                data="{ \\\"token\\\":\\\"$token\\\" }";;
+            crypto_secret) # $password is password
+                secret=$(cat "$password") # read & store token
+                data="{ \\\"crypto_secret\\\":\\\"$secret\\\" }" ;;
+            iaas_secrets) # $password is a file
+                source "$password" # populate $userid, $secret and $tenant (if exists)
+                if [[ $tenant ]]; then
+                    data="{ \\\"userId\\\":\\\"$userid\\\",\\\"userSecret\\\":\\\"$secret\\\", \\\"tenantName\\\":\\\"$tenant\\\" }"
+                else
+                    data="{ \\\"userId\\\":\\\"$userid\\\",\\\"userSecret\\\":\\\"$secret\\\" }"
+                fi
+                ;;
+        esac
+        envault "$vault_url" "$data"
+        #echo "$vault_url | $data "
+    done < "$list"
+}
+
+# Run it
+main "$@"

@@ -1,0 +1,40 @@
+#!/bin/bash
+
+connections=0
+
+close_wait=0
+closing=0
+closed=0
+established=0
+fin_wait1=0
+fin_wait2=0
+last_ack=0
+listen=0
+time_wait=0
+syn_sent=0
+syn_recv=0
+unknown=0
+
+netstat -putaneo | tr -s ' ' | \
+{ while IFS=' ' read proto recv_q send_q local_address foreign_address state user inode pid_program name timer ; do
+    if [ "$proto" = "udp" ] || [ "$proto" = "Proto" ] || [ "$proto" = "Active" ]; then
+        continue
+    fi
+    ((connections++))
+    case $state in
+        ESTABLISHED)    ((established++));;
+        FIN_WAIT1)  ((fin_wait1++));;
+        FIN_WAIT2)  ((fin_wait2++));;
+        LAST_ACK)   ((last_ack++));;
+        LISTEN)     ((listen++));;
+        CLOSE_WAIT) ((close_wait++));;
+        CLOSING)    ((closing++));;
+        CLOSED)     ((closed++));;
+        TIME_WAIT)  ((time_wait++));;
+        SYN_SENT)   ((syn_sent++));;
+        SYN_RECV)   ((syn_recv++));;
+        UNKNOWN)    ((unknown++));;
+    esac
+done
+echo "Network connections: $connections | listen=$listen established=$established closing=$closing closed=$closed close_wait=$close_wait syn_sent=$syn_sent syn_recv=$syn_recv last_ack=$last_ack time_wait=$time_wait fin_wait1=$fin_wait1 fin_wait2=$fin_wait2 unknown=$unknown"
+}

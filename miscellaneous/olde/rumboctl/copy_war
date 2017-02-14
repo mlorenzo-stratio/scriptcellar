@@ -1,0 +1,78 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME copy_war <app1...appN> [<server1...serverN>]
+	Copies specified app WARs to servers
+EOH
+}
+
+### Copy & Deploy functions
+copy_war(){ # copy WAR to app servers
+        local app=$1
+        shift
+        local servers=$*
+        local output
+        local count=0
+
+	# Check for WAR file
+        if [ ! -e "$WARS_BASE_PATH/$app/$app.war" ]; then
+                echo "WAR file $WARS_BASE_PATH/$app/$app.war doesn't exist!!" | tee -a $TMP
+                return 1
+        fi
+        # if server_name isn't set, all servers were selected
+        servers=${servers:-"$(getServer $app 'application')"}
+
+	# Calculate TOTAL
+        local TOTAL=$(getServer $app 'application' | wc -l)
+        if getServer $app 'application' | grep -q "$HOSTNAME" && [ "$TOTAL" -gt 1 ]; then
+                let TOTAL=TOTAL-1
+        fi
+
+        # Copy WAR to every server
+	log "copy_war: Copying \`$app\` WAR to $servers"
+        for server in $servers; do
+		print_percent
+                # avoid copying war to self hostname
+                if [ "$server" != "$HOSTNAME" ]; then
+			log -n "copy_war: copying \`$app\` to $server... "
+                        $DEBUG ssh $WARS_USER@$server mkdir -p $WARS_BASE_PATH/$app/
+                        output="$($DEBUG scp -pr $WARS_BASE_PATH/$app/$app.war $WARS_USER@$server:$WARS_BASE_PATH/$app)"
+			
+                        if [ $? = 0 ]; then
+                                output="$app.war copied to $server"
+				log -a "OK"
+			else
+				log -a "ERROR!!"
+				log "copy_war: output: $output"
+                        fi
+                        let count=count+1
+			print_comment
+                        echo -e $output | tee -a $TMP
+			print_comment
+			print_percent
+			
+                else
+                        output="WARNING! Not copying on current hostname $HOSTNAME"
+			print_comment
+                        echo -e $output | tee -a $TMP
+			print_comment
+                        continue
+                fi
+        done
+}
+
+check_arg 1 "" $* || exit $?
+retrieve_configuration
+getAppsServers $*
+for app in $apps; do
+	lock $app
+	copy_war $app $servers
+	unlock $app
+done

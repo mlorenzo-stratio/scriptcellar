@@ -1,0 +1,102 @@
+#!/bin/bash
+
+OK=0
+WARNING=1
+CRITICAL=2
+
+DESC_FULL=$1
+DESC=$(echo $1 | tr -t ' ' '_')
+URL="$2"
+AUTH="$3"
+WARNING_THRESHOLD="$4"
+CRITICAL_THRESHOLD="$5"
+
+declare -A HOSTS=( [phoenix_p56_15]="madup21"
+		   [phoenix_p56_23]="madup21"
+		   [phoenix_p57_17]="madup22"
+		   [phoenix_p59_21]="madup24" )
+
+function getNodePort(){
+	local node_id=$1
+	echo $[ $(echo $node_id | sed -e "s/^phoenix_p[0-9]*_\(.*\)/\1/") + 50 ]"80"
+}
+
+enqueue=0
+dequeue=0
+CACHE="/var/lib/centreon/centplugins/jms_queue_cluster.$DESC"
+for node in "${!HOSTS[@]}"; do 
+	TMP=$(mktemp -p /dev/shm)
+	HOST=${HOSTS[$node]}
+	PORT=$(getNodePort $node)
+
+	# Avoid checking other nodes until next deploy
+	if [ "$DESC_FULL" = "JMS Stats Indexer Queue" -a "$HOST:$PORT" != "madup21:6580" ]; then
+				continue
+	fi
+
+	HOME=/tmp
+	lynx -dump "http://$HOST:$PORT/$URL" "-auth=$AUTH" 2>/dev/null > $TMP
+
+	if [ $? != 0 ] || ! grep -qE "^JMX MBean View" $TMP ; then
+		ERRMSG="$HOST:$PORT,$ERRMSG"
+		STATUS=2
+	fi
+
+	_enqueue=$(grep -E "^   Enqueue" $TMP | sed -e "s:^   EnqueueCount long R \([0-9]*\) Number of messages that have been.*$:\1:") 
+	_dequeue=$(grep -E "^   Dequeue" $TMP | sed -e "s:^   DequeueCount long R \([0-9]*\) Number of messages that have been.*$:\1:")
+	if [ -z $_enqueue ]; then
+		_enqueue=0
+	fi
+	if [ -z $_dequeue ]; then
+		_dequeue=0
+	fi
+	enqueue=$[ $enqueue + $_enqueue ]
+	dequeue=$[ $dequeue + $_dequeue ]
+	rm -f $TMP
+done
+
+MSG="$DESC_FULL"
+if [ ! -z "$ERRMSG" ]; then
+	ERRMSG=$(echo $ERRMSG | sed -e "s/,$//")
+	MSG="$MSG: Error connecting to: $ERRMSG"
+fi
+
+LAST_DEQUEUED=""
+PROCESSED=-1
+
+if [ -e "$CACHE" ]; then
+	LAST_DEQUEUED=$(cat "$CACHE")
+	if [ "$dequeue" -ge "$LAST_DEQUEUED" ]; then
+		PROCESSED=$[ $dequeue - $LAST_DEQUEUED ]
+	else
+		PROCESSED=-1
+	fi
+fi
+QUEUED=$[ $enqueue - $dequeue ]
+
+# Store value in cache file
+echo $dequeue > $CACHE
+
+if [ $QUEUED -ge $CRITICAL_THRESHOLD ]; then
+	if [ $PROCESSED = 0 ]; then
+		MSG2="NOT QUEUEING!! "
+	fi	
+	echo "$MSG: CRITICAL!! $MSG2$QUEUED queued messages (threshold:$CRITICAL_THRESHOLD), $PROCESSED processed messages | processed_messages=$PROCESSED queued_messages=$QUEUED"
+	exit $CRITICAL
+elif [ $QUEUED -ge $WARNING_THRESHOLD ]; then
+	if [ $PROCESSED = 0 ]; then
+		echo "$MSG: CRITICAL: NOT QUEUEING!! $QUEUED queued messages (threshold:$WARNING_THRESHOLD), $PROCESSED processed messages | processed_messages=$PROCESSED queued_messages=$QUEUED"
+		exit $CRITICAL
+	fi	
+	echo "$MSG: WARNING!! $QUEUED queued messages (threshold:$WARNING_THRESHOLD), $PROCESSED processed messages | processed_messages=$PROCESSED queued_messages=$QUEUED"
+	exit $WARNING
+elif [ $PROCESSED = 0 ]; then
+	echo "$MSG: CRITICAL!! NOT QUEUEING!! $QUEUED queued messages, $PROCESSED processed messages | processed_messages=$PROCESSED queued_messages=$QUEUED"
+	exit $CRITICAL
+elif [ $PROCESSED = -1 ]; then
+	echo "$MSG: First run: created cache value | processed_messages=0 queued_messages=0" 
+	exit $OK
+else
+	echo "$MSG: OK, $QUEUED queued messages, $PROCESSED processed messages | processed_messages=$PROCESSED queued_messages=$QUEUED" 
+	exit $OK
+fi

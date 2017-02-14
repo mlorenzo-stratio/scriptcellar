@@ -1,0 +1,53 @@
+#!/bin/bash
+
+DB=$1
+MASTER=$2
+PMON=""
+
+if [ $DB = "front" ]; then
+        PMON="RUMPRD"
+elif [ $DB = "back" ]; then
+        PMON="prdrbo"
+else
+        PMON="BMSPRD"
+fi
+
+HOST="$(echo $HOSTNAME | cut -d '.' -f1)"
+
+has_pmon(){
+        if ps -fe | grep -v grep | grep -E "ora_pmon_$PMON" -q ; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+if has_pmon ; then
+	COUNT01=$(ps -ef | grep pmon | grep $PMON | grep -v grep | wc -l)
+	COUNT02=0
+        INSTANCE=$(ps -ef | grep pmon | grep $PMON | grep -v grep | awk '{print $8}' | awk -F_ '{print $3"_"$4}')
+else
+        if [ "$HOST" = "madup01" ]; then
+                HOST="madup02"
+        else
+                HOST="madup01"
+        fi
+	COUNT02=$(ssh $HOST ps -ef | grep pmon | grep $PMON | grep -v grep | wc -l)
+	COUNT01=0
+        INSTANCE=$(ssh $HOST ps -ef | grep pmon | grep $PMON | grep -v grep | awk '{print $8}' | awk -F_ '{print $3"_"$4}')
+fi
+COUNT=$(($COUNT02+$COUNT01))
+
+if [ $COUNT -eq 0 ]; then
+        echo "Database $PMON is DOWN"
+        exit 2
+elif [ $HOST != $MASTER ]; then
+        echo "Database $INSTANCE ($HOST) OK (FAILOVER) - $COUNT PMON process(es) running"
+        exit 0
+else
+        echo "Database $INSTANCE ($HOST) OK - $COUNT PMON process(es) running"
+        exit 0
+fi
+
+exit 255
+

@@ -1,0 +1,16 @@
+#!/bin/bash
+
+TABLESPACE=$1
+
+if [ "$USER" != "oracle" ]; then
+	echo "Error!! only execute as oracle!"
+	exit 1
+fi
+
+if [ -z "$TABLESPACE" ]; then
+	echo "No args specified."
+	exit 1
+fi
+
+. /home/oracle/.bash_FRONTprofile 2>/dev/null
+$ORACLE_HOME/bin/sqlplus -s system/v3ranit0by3 as sysdba @/usr/local/nagios/libexec/check_tablespace_front.sql "$TABLESPACE"

@@ -1,0 +1,9 @@
+#!/bin/bash
+
+if [ "$USER" != "oracle" ]; then
+        echo "Error!! only execute as oracle!"
+        exit 1
+fi
+
+. /home/oracle/.bash_FRONTprofile 2>/dev/null
+$ORACLE_HOME/bin/sqlplus -s prdrmbw/mc3t1pdy35PM@FRONTPRD @/usr/local/nagios/libexec/check_active_session.sql

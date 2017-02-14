@@ -1,0 +1,17 @@
+#!/bin/bash
+
+DATABASE=$1
+
+COUNT=`ps -ef | grep pmon | grep $DATABASE | grep -v grep | wc -l`
+
+if [ $COUNT -eq 0 ]; then
+        echo "$DATABASE Database is DOWN"
+        exit 2
+else
+        INSTANCE=`ps -ef | grep pmon | grep $DATABASE | grep -v grep | awk '{print $8}' | awk -F_ '{print $3"_"$4}'`
+        echo "$INSTANCE OK - $COUNT PMON process(es) running"
+        exit 0
+fi
+
+exit 1
+

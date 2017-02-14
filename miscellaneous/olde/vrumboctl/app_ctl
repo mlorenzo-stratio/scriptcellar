@@ -1,0 +1,135 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+service="jboss"
+ssh_status="0"
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME <start|stop|restart|status|kill|threaddump|heapdump|waitfornode> <app> [<server1...serverN>]
+	Provides JBoss nodes management
+EOH
+}
+
+# returns true in case $server hosts a Tomcat instead of a JBoss
+isTomcat(){
+        if ssh -oStrictHostKeyChecking=no $server test -f /etc/init.d/tomcat 2>/dev/null; then
+                return 0
+        fi
+        return 1
+}
+
+_ssh(){
+        local server=$1
+        shift
+        local args=$*
+	local tmp=$(mktemp -p /dev/shm)
+	#echo _ssh: ssh_status=$ssh_status
+	{
+	        $DEBUG ssh -oStrictHostKeyChecking=no $server $args 2>/dev/null
+		echo $? > $tmp
+	} | tee $output | tee -a $TMP
+	ssh_status=$(cat $tmp)
+	#echo _ssh: ssh_status=$ssh_status
+	rm -f $tmp
+}
+
+app_ctl(){ # JBoss/Tomcat CTL
+        local action=${1,,}
+        shift
+        local app=$1
+        shift
+        local args=$*
+        local PERCENT
+        if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+        if [ -z "$args" ]; then
+                # Build server list
+		local servers=$(getServer $app 'application')
+                local TOTAL=$(echo $servers | tr -t ' ' '\n' | wc -l)
+                local count=0
+		log "Performing $action \`$app\` on $servers"
+                for server in $servers; do
+			if isTomcat; then service="tomcat" ; fi
+                        print_percent
+                        let count=count+1
+                        if [ "$action" = "waitfornode" ]; then
+                                _ssh $server sudo /sbin/service $service $action
+                                sed -i '/XXX/d' $TMP
+                        else
+                                print_comment
+				#echo 1: ssh_status=$ssh_status
+                                _ssh $server sudo /sbin/service $service $action
+				#echo 2: ssh_status=$ssh_status
+                                print_comment
+                        fi
+                        print_percent
+                done
+		log "Finished $action \`$app\` on $servers"
+        else
+		log "Performing $action \`$app\` on $args"
+                # arg may be server
+                for arg in $args; do
+                        local TOTAL=1
+                        local count=0
+                	local output=$(mktemp -p /dev/shm)
+                        print_percent
+                        local server=$arg
+			if isTomcat; then service="tomcat" ; fi
+                        if [ "$action" = "waitfornode" ]; then
+                                _ssh $server sudo /sbin/service $service $action
+                                sed -i '/XXX/d' $TMP
+                        else
+                        	print_comment
+				log -n "$action JBoss \`$app\` nodes on $server..."
+				#echo 1: ssh_status=$ssh_status
+                                _ssh $server sudo /sbin/service $service $action
+				#echo 2: ssh_status=$ssh_status
+				if [ $ssh_status != 0 ]; then
+                                	log -a "ERROR!!"
+                                	log "output: $(cat $output)"
+					echo -n > $output
+                                else
+                                	log -a "OK"
+                                fi
+                                print_comment
+                        fi
+                        let count=count+1
+                        print_percent
+                done
+		log "Finished $action \`$app\` on $args"
+        fi
+        local _tmp=$(mktemp -p /dev/shm)
+        uniq $TMP $_tmp
+        cp $_tmp $TMP
+        rm -f $_tmp
+        echo >> $TMP
+	#echo 3: ssh_status=$ssh_status
+	return $ssh_status
+}
+
+check_arg 2 "" $* || exit $?
+action=$1
+shift
+app=$1
+shift
+case "$action" in
+        start|stop|restart|status|kill|threaddump|heapdump|waitfornode) ;;
+        *)              usage ; exit $UNKNOWN_OPTION_SPECIFIED ;;
+esac
+retrieve_configuration
+if ! isApp $app; then
+	usage
+	exit $NON_EXISTANT_APP
+fi
+parseServers $*
+lock $app
+app_ctl $action $app $servers
+exit_status=$?
+#echo exit_status=$exit_status
+unlock $app
+rm -f $output
+exit $exit_status

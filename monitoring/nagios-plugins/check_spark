@@ -1,0 +1,366 @@
+#!/bin/bash
+
+# TODO:
+# - Add GC Stats
+
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+
+function help(){
+cat << EOM
+Usage: check_spark [-H <host>] [-p <port>] -s <statistic> [-w <warning_threshold>] [-c <critical_threhsold>]
+
+Statistics:
+    status:             Spark status
+    cores:              Overall used cores
+    memory:             Overall used memory
+    drivers_status:     Check drivers status
+    apps_status:        Check applications status
+    worker_cores:       Check worker cores
+    worker_memory:      Check worker memory
+    worker_executors:   Check worker executors
+EOM
+}
+
+# Exit status variables
+UNKNOWN=3
+CRITICAL=2
+WARNING=1
+OK=0
+
+# VARIABLES
+HOST=${HOST:-"0.0.0.0"}
+BC_CMD=${BC_CMD:-"$(which bc)"}
+CURL=${CURL:-"$(which curl)"}
+MSGHEADER="Spark"
+
+# Get options
+while getopts "H:p:s:w:c:h" option; do
+   case $option in
+      H)      HOST=$OPTARG ;;
+      p)      PORT=$OPTARG ;;
+      s)      STAT=$OPTARG ;;
+      w)      WARN=$OPTARG ;;
+      c)      CRIT=$OPTARG ;;
+      h|\?)   help ; exit 0 ;;
+      *)      help ; exit $UNKNOWN ;;
+   esac
+done
+
+# If checking worker then we need to query a different port
+if [[ "$STAT" =~ ^worker_ ]]; then
+    PORT=${PORT:-"8081"}
+else
+    PORT=${PORT:-"8080"}
+fi
+
+# THRESHOLD DATA, VARIABLES & MESSAGES
+declare -A DATA=(
+    # THRESHOLDS
+    ["status_OK"]='== 1'             # 1 equals ALIVE
+    ["status_WARN"]='== -1'          # irrelevant state
+    ["status_CRIT"]='!= 1'           # any other thing means not ALIVE
+
+    ["cores_OK"]='< 0.70'            # < 70%
+    ["cores_WARN"]='>= 0.70'         # >= 70%
+    ["cores_CRIT"]='>= 0.80'         # >= 80%
+
+    ["memory_OK"]='< 0.70'           # < 70%
+    ["memory_WARN"]='>= 0.70'        # >= 70%
+    ["memory_CRIT"]='>= 0.80'        # >= 80%
+
+    ["drivers_status_OK"]='> -1'     # unknown threshold
+    ["drivers_status_WARN"]='< -1'   # unknown threshold
+    ["drivers_status_CRIT"]='< -1'   # unknown threshold
+
+    ["apps_status_OK"]='> -1'        # unknown threshold
+    ["apps_status_WARN"]='< -1'      # unknown threshold
+    ["apps_status_CRIT"]='< -1'      # unknown threshold
+
+    ["worker_cores_OK"]='< 0.70'     # < 70%
+    ["worker_cores_WARN"]='>= 0.70'  # >= 70%
+    ["worker_cores_CRIT"]='>= 0.80'  # >= 80%
+
+    ["worker_memory_OK"]='< 0.70'    # < 70%
+    ["worker_memory_WARN"]='>= 0.70' # >= 70%
+    ["worker_memory_CRIT"]='>= 0.80' # >= 80%
+
+    ["worker_executors_OK"]='> -1'   # unknown threshold
+    ["worker_executors_WARN"]='< -1' # unknown threshold
+    ["worker_executors_CRIT"]='< -1' # unknown threshold
+
+    # STATISTICS & QUERIES
+    ["status_MSG"]='Cluster' # Desired stats
+    ["status_STAT"]='Status' # Desired stats
+
+    ["cores_MSG"]='Overall cores' # Desired stats
+    ["cores_STAT"]='Cores' # Desired stats
+
+    ["memory_MSG"]='Memory' # Desired stats
+    ["memory_STAT"]='Memory' # Desired stats
+    ["memory_UNIT"]='B'
+
+    ["drivers_status_MSG"]='Drivers' # Desired stats
+    ["drivers_status_STAT"]='Drivers' # Desired stats
+
+    ["apps_status_MSG"]='Applications' # Desired stats
+    ["apps_status_STAT"]='Applications' # Desired stats
+    ["apps_status_UNIT"]='c'
+
+    ["worker_cores_MSG"]='Worker cores' # Desired stats
+    ["worker_cores_STAT"]='Cores' # Desired stats
+
+    ["worker_memory_MSG"]='Worker memory' # Desired stats
+    ["worker_memory_STAT"]='Memory' # Desired stats
+    ["worker_memory_UNIT"]='B'
+
+    ["worker_executors_MSG"]='Executors' # Desired stats
+    ["worker_executors_STAT"]='Executors' # Desired stats
+)
+
+# Echo to STDERR
+function echo_err(){
+    local msg=$*
+    echo -e "$msg" >&2
+}
+
+# Function to capture syntax errors from bc
+function BC(){
+    local output
+    #if read -t 0; then
+        output=$(cat | $BC_CMD 2> "$stderr")
+    #else
+    #    exit $UNKNOWN
+    #fiº
+    if grep -q "syntax error" "$stderr"; then
+        echo_err "bc: syntax error"
+        exit $UNKNOWN
+    fi
+    echo "$output"
+}
+
+# Function to convert to bytes given the unit of the measure
+function toBytes(){
+    local size=$1
+    local unit=$2
+    case "$unit" in
+        B|b|bytes|Bytes|BYTES)      factor="1" ;;
+        KB|Kb|kb|KBytes|kbytes)     factor="1024" ;;
+        MB|Mb|mb)                   factor="1024*1024" ;;
+        GB|Gb|gb)                   factor="1024*1024*1024" ;;
+        TB|Tb|tb)                   factor="1024*1024*1024*1024" ;;
+    esac
+    echo "scale=2;$size*$factor" | BC | sed -e "s/^\./0./"
+}
+
+# Function to compare values to thresholds
+function cmp(){
+    local args="$*"
+    if [ -z "$1" -o -z "$2" ]; then
+        echo "$MSGHEADER Unknown error!!"
+        exit "$UNKNOWN"
+    fi
+    # Discard float numbers with a definition of exponent above -10
+    if [[ "$1" =~ ^.*E-[1-9]{1}[0-9]{1}[0-9]*$ ]]; then
+        args="0 $2"
+    fi
+    exit_value="$(echo "$args" | BC)"
+    if [ "$exit_value" = 1 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Function to extract de query values
+function extractValues(){
+    cat | sed -e 's/<[^>]*>//g' 2>&- | \
+        grep -Ev "^[[:space:]]*$" 2>&- | \
+        parseQuery
+}
+
+# Function to parse the results of the query
+function parseQuery(){
+    case "$STAT" in
+        cores|worker_memory)
+            grepOpts="-A1"
+        ;;&
+        memory|drivers_status|apps_status)
+            grepOpts="-A2"
+        ;;&
+        status)
+            cat | grep "$search_stats" $grepOpts 2>&- | \
+                tr -d "\n" | \
+                sed -e "s/^[[:space:]]*//" -e "s/: /|/" -e "s/$/\n/" -e "s/ALIVE/1/" -e '/Status|1/! s/Status|.*/Status|0\n/' ;;
+        cores|memory)
+            cat | grep "$search_stats" $grepOpts 2>&- | \
+                tr -d "\n" | \
+                sed -e "s/[ ]\+/ /g" -e "s/^ //" -e "s/: /|/" -e "s/ Total, /:/" -e "s/ Used.*$/\n/" ;;
+        drivers_status|apps_status)
+            cat | grep "$search_stats" $grepOpts 2>&- | \
+                tr -d "\n" | \
+                sed -e "s/[ ]\+/ /g" -e "s/^ //" -e "s/: /|/" -e "s/ Running, /:/" -e "s/ Completed.*$/\n/" ;;
+        worker_cores|worker_memory)
+            cat | grep "$search_stats" $grepOpts 2>&- | \
+                tr -d "\n" | \
+                sed -e "s/[ ]\+/ /g" -e "s/^ //" -e "s/: /|/" -e "s/ (\([0-9.]\+.*\) Used)/:\1\n/" ;;
+        worker_executors)
+            cat | grep "$search_stats" $grepOpts 2>&- | \
+                tr -d "\n" | \
+                sed -e "s/[ ]\+/ /g" -e "s/^[^0-9]\+\([0-9]\+\).*$/Executors|\1\n/" ;;
+        *)
+            help ; exit $UNKNOWN ;;
+    esac
+}
+
+# Clean temp files upon exit
+function cleanup(){
+    rm -f "$tmp" "$stderr" # Remove temp files
+}
+trap cleanup 0
+
+# Define trap function to execute a method upon error on failure and exit
+function error(){
+    local parent_lineno="$1"
+    local message="$2"
+    local code="${3:-$UNKNOWN}"
+    local funcname="$4"
+    if [ ! -z "$funcname" ]; then
+        funcname="on function $funcname or "
+    fi
+    if [[ -n "$message" ]] ; then
+        echo "Error ${funcname}near line ${parent_lineno}: ${message}; exiting with status ${code}"
+    else
+        echo "Error ${funcname}near line ${parent_lineno}; exiting with status ${code}"
+    fi
+    exit "${code}"
+}
+trap 'error ${LINENO} ${FUNCNAME}' ERR
+
+############################ MAIN START ############################
+
+if ! (echo > /dev/tcp/"$HOST"/"$PORT") >/dev/null 2>&1; then
+    echo "$MSGHEADER $HOST:$PORT is down!"
+    exit $CRITICAL
+fi
+
+if [ -z "$STAT" ]; then
+    echo "Statistic is mandatory"
+    help
+    exit $UNKNOWN
+fi
+
+case $STAT in
+    status|cores|memory|drivers_status|apps_status|worker_cores|worker_memory|worker_executors)
+        message=${DATA[${STAT}_MSG]}                    # Output header
+        stats=${DATA[${STAT}_STAT]}                     # Stat to retrieve
+        showStat=${DATA[${STAT}_SHOW]}                  # Stat to be shown on output (not perfdata)
+        showUnit=${DATA[${STAT}_SHOW_UNIT]}             # Show unit for statOutput
+        unit=${DATA[${STAT}_UNIT]}                      # Units for stats
+        THRESHOLD_OK=${DATA[${STAT}_OK]}                # OK threshold
+        THRESHOLD_WARN=${DATA[${STAT}_WARN]}            # WARN threshold
+        THRESHOLD_CRIT=${DATA[${STAT}_CRIT]}            # CRIT threshold
+    ;;
+    *)
+        help ; exit $UNKNOWN
+    ;;
+esac
+
+# Override default warning & critical threshold values
+if [ "$WARN" ]; then
+    THRESHOLD_WARN="$(echo $THRESHOLD_WARN | cut -d ' ' -f1) $WARN"
+fi
+if [ "$CRIT" ]; then
+    THRESHOLD_CRIT="$(echo $THRESHOLD_CRIT | cut -d ' ' -f1) $CRIT"
+fi
+
+showStat=${showStat:-"$stats"}
+
+search_stats="$stats" ### ???
+#if [ "$STAT" != "worker_executors" ]; then ### ???
+#    search_stats="$stats:" ### ???
+#fi ### ???
+
+tmp=$(mktemp -p /dev/shm)
+stderr=$(mktemp -p /dev/shm)
+# Query Spark servers
+curl --silent -XGET http://"$HOST:$PORT" 2>&- | extractValues > "$tmp"
+
+# Select the specified variables
+while IFS=$'|' read key value ; do
+    case "$STAT" in
+        cores|worker_cores)
+            total=$(echo "$value" | cut -d':' -f1)
+            value=$(echo "$value" | cut -d':' -f2)
+            warning=$(echo "$THRESHOLD_WARN" | cut -d' ' -f2)
+            critical=$(echo "$THRESHOLD_CRIT" | cut -d' ' -f2)
+            WARNING_VALUE=$(echo "$total"*"$warning" | BC)
+            CRITICAL_VALUE=$(echo "$total"*"$critical" | BC)
+            PCT_USED=$(echo scale=2\;"$value/$total" | BC)
+            statValue=$PCT_USED
+            statOutput="used $value of $total"
+            output="$key=$value;$WARNING_VALUE;$CRITICAL_VALUE;0;$total"
+        ;;
+        memory|worker_memory)
+            total=$(echo "$value" | cut -d':' -f1)
+            total_unit=$(echo "$total" | cut -d' ' -f2)
+            total=$(echo "$total" | cut -d' ' -f1)
+            total_bytes=$(toBytes "$total" "$total_unit")
+            used=$(echo "$value" | cut -d':' -f2)
+            used_unit=$(echo "$used" | cut -d' ' -f2)
+            used=$(echo "$used" | cut -d' ' -f1)
+            used_bytes=$(toBytes "$used" "$used_unit")
+            warning=$(echo "$THRESHOLD_WARN" | cut -d' ' -f2)
+            critical=$(echo "$THRESHOLD_CRIT" | cut -d' ' -f2)
+            WARNING_VALUE=$(echo "$total_bytes"*"$warning" | BC)
+            CRITICAL_VALUE=$(echo "$total_bytes"*"$critical" | BC)
+            statValue=$(echo scale=2\;"$used_bytes/$total_bytes" | BC)
+            PCT_USED="$(echo scale=2\;"$statValue*100" | BC)%"
+            statOutput="used $PCT_USED of $total$total_unit"
+            output="$key=$used_bytes$unit;$WARNING_VALUE;$CRITICAL_VALUE;0;$total_bytes"
+        ;;
+        status)
+            statValue="$value"
+            statOutput=""
+            output=""
+        ;;
+        drivers_status|apps_status)
+            running="$(echo "$value" | cut -d':' -f1)"
+            completed="$(echo "$value" | cut -d':' -f2)"
+            statValue=$running
+            statOutput="$running running, $completed completed"
+            output="Running=$running; Completed=$completed;"
+        ;;
+        worker_executors)
+            running="$(echo "$value" | cut -d':' -f1)"
+            statValue=$running
+            statOutput="$running running"
+            output="Running=$running;"
+        ;;
+    esac
+done < "$tmp"
+
+# Fill $exit_status according to values and thresholds
+if cmp "$statValue" "$THRESHOLD_CRIT";then
+    message="$message is CRITICAL"
+    exit_status=$CRITICAL
+elif cmp "$statValue" "$THRESHOLD_WARN"; then
+    message="$message is WARNING"
+    exit_status=$WARNING
+elif cmp "$statValue" "$THRESHOLD_OK"; then
+    message="$message is OK"
+    exit_status=$OK
+fi
+if [ "$STAT" != "status" ]; then
+    message="$message:"
+fi
+
+if [ ! -z "$output" ]; then
+    output=" | $output"
+fi
+
+# Print service information and performance data
+echo -n "$MSGHEADER $message $statOutput"
+echo -e "$output"
+
+# Exit and return a value according to defined thresholds
+exit $exit_status

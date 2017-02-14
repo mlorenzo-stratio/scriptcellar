@@ -1,0 +1,10 @@
+#!/bin/bash
+
+if ! /etc/init.d/vpnc status > /dev/null 2>&1; then
+	tmp=$(mktemp)
+	/etc/init.d/vpnc stop > $tmp
+	sleep 1
+	/etc/init.d/vpnc start >> $tmp
+	#echo -e "Restarting VPN:\n\n$(cat $tmp)" | mail -s 'Jenkins VPN to Interxion is DOWN!' systems@rumbo.com
+	rm -f $tmp
+fi

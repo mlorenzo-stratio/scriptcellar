@@ -1,0 +1,42 @@
+#!/bin/bash
+
+##############################################################
+# This script checks if the Erding database responds to ping
+##############################################################
+
+STATE_OK=0
+STATE_CRITICAL=2
+STATE_UNKNOWN=3
+
+WARNING=$1
+CRITICAL=$2
+
+COMMAND_RESULT=$(sudo -u oracle /usr/local/nagios/libexec/check_frontdb)
+COMMAND_STATUS=$(echo $COMMAND_RESULT | wc -l)
+
+#time=0.000809s;0.010000;0.030000;0.000000;10.000000
+case $((COMMAND_STATUS)) in
+	1)
+		n=$(echo "scale=3; $(echo $COMMAND_RESULT | sed -e "s/^OK (\([^ ]*\).*$/\1/") / 1000" | bc | sed -e s:^\.:0.:)
+		RESULT=$(echo $COMMAND_RESULT | sed -e "s/^OK (\([^)]*\))/$n/")
+		STATUS="OK"
+		EXIT_CODE=$STATE_OK
+		if [ "$(echo "$RESULT > $CRITICAL" | bc)" = 1 ]; then
+			STATUS="CRITICAL"
+			EXIT_CODE=$STATE_CRITICAL
+		elif [ "$(echo "$RESULT > $WARNING" | bc)" = 1 ]; then
+			STATUS="WARNING"
+			EXIT_CODE=$STATE_WARNING
+		fi
+
+		echo "PING $STATUS: $RESULT seconds | time=$RESULT""s;$1;$2;"
+		exit $EXIT_CODE
+		;;
+	0)
+		echo "PING FAILED"
+		exit $STATE_CRITICAL
+		;;
+	*)
+		echo "Unknown state"
+		exit $STATE_UNKNOWN
+esac

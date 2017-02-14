@@ -1,0 +1,77 @@
+#!/bin/bash
+
+# OUTPUT ERROR CODES
+MISSING_ARGS=2
+NON_EXISTANT_NODE=3
+NON_EXISTANT_SERVER=4
+NON_EXISTANT_APP=5
+GRACEFUL_DEPLOY_ERROR=6
+LOCKED_APPLICATION=7
+DEPLOY_ERROR=8
+GRACEFUL_RESTART_ERROR=9
+INVALID_ARGUMENT=10
+UNKNOWN_ERROR=11
+WRONG_SCRIPT_EXECUTION=100
+UNKNOWN_OPTION_SPECIFIED=101
+
+# PATHS
+WARS_BASE_PATH="/opt/prdrmbw/bin/DEPLOYMENT/WARS"
+JBOSS_BASE_PATH="/ama/wh/PRD/rmb/jboss/phoenix/server"
+TERRACOTTA_BASE_PATH="/home/jboss_rmb/bin/terracotta"
+INFINISPAN_BASE_PATH="/home/jboss_rmb/infinispan"
+
+# LOCK DIR
+LOCK_DIR="/dev/shm/rumboctl"
+mkdir -p $LOCK_DIR
+
+# REPORT MAILS
+LOGDIR="/home/rumbo/log/rumboctl"
+mkdir -p $LOGDIR
+MAINLOG="/home/rumbo/log/rumboctl.log"
+
+# CONNECTION VARIABLES & USERS
+_USER="rumbo"
+CONNECTION_JON_SERVER="madup0718"
+CONNECTION_MGMT_SERVER="madup0706"
+WARS_USER="prdrmbw"
+
+# CTL SCRIPTS
+JBOSS_CTL="/home/rumbo/rumboctl/jbossctl"
+TERRACOTTA_CTL="/home/rumbo/rumboctl/terracottactl"
+INFINISPAN_CTL="/home/rumbo/rumboctl/infinispanctl"
+JON_CTL="/home/rumbo/rumboctl/jonctl"
+DEPLOY_CTL="/home/rumbo/rumboctl/deploy"
+MAINT_CTL="/rmb/bin/mant_set.sh"
+BALANCER_CTL="/home/rumbo/rumboctl/balancerctl"
+
+# SERVERS
+APPSERVERS_STG=(madus31 madus32)
+APPSERVERS_PRD=(madup21 madup22 madup23 madup24 madup28 madup51 madup52 madup53 madup54 madup55 madup56 madup57 madup58 madup59 madup60)
+WEBSERVERS_STG=(madus0801 madus0802 madus0803 madus0804 madus0805 madus0806 madus0807 madus0808)
+WEBSERVERS_PRD=(madup0801 madup0802 madup0803 madup0804 madup0805 madup0806 madup0807 madup0808 madup0809 madup0810 madup0811 madup0812 madup0813 madup0816 madup0817 madup0818)
+
+# DEFAULT VALUES
+APPSERVERS=( ${APPSERVERS_PRD[@]} )
+WEBSERVERS=( ${WEBSERVERS_PRD[@]} )
+
+export ENV="PRD"
+# Autodetect environment STG or PRD
+if [[ $HOSTNAME =~ ^madus[0-9]*$ ]]; then
+	APPSERVERS=( "${APPSERVERS_STG[@]}" )
+	WEBSERVERS=( "${WEBSERVERS_STG[@]}" )
+	JBOSS_BASE_PATH="/ama/wh/STG/rmb/jboss/phoenix/server"
+	export ENV="STG"
+	export STG="yes"
+fi
+
+# TEMP FILES
+TMP=${TMP:-"$LOCK_DIR/output"}
+TMP_STATUS="$LOCK_DIR/status"
+TMP_STATUS2="$LOCK_DIR/status2"
+export NODES_LIST_FILE=${NODES_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+export APP_LIST_FILE=${APP_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+export TC_LIST_FILE=${TC_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+export ISPN_LIST_FILE=${ISPN_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+
+# DEBUG
+#DEBUG=echo

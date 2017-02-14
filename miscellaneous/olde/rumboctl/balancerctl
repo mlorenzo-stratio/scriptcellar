@@ -1,0 +1,61 @@
+#!/bin/bash
+
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+
+ACTION="$1"
+NODE="$2"
+APP="$3"
+
+usage(){
+        echo "Usage: $0 <in|out|check> <node> <app>"
+        echo
+}
+
+checkUser(){
+        if [ "$USER" != "$_USER" ]; then
+                echo "User $USER is NOT allowed to execute this script. Only $_USER"
+                exit 2
+        fi
+}
+
+
+
+
+### MAIN
+if [ -z "$1" -o -z "$2" -o -z "$3" ]; then
+        usage
+        exit 0
+fi
+
+checkUser
+
+case $ACTION in
+	"in") 	
+		for APACHE in ${WEBSERVERS[@]}; do
+                	echo "wget -O - http://$APACHE/modjk_rumbo/?cmd=update\&from=list\&w=balancer_$APP\&sw=$NODE\&vwa=0 >/dev/null 2>&1"
+        	done
+		;;
+	"out")	
+		for APACHE in ${WEBSERVERS[@]}; do
+                        echo "wget -O - http://$APACHE/modjk_rumbo/?cmd=update\&from=list\&w=balancer_$APP\&sw=$NODE\&vwa=1 >/dev/null 2>&1"
+                done
+		;;
+	check) 	
+		count=${#WEBSERVERS[@]}
+		for i in $(seq 1 $count) ; do
+			APACHE=${WEBSERVERS[$i-1]}
+			STATUS=$(wget -O - http://$APACHE/modjk_rumbo/?cmd=show\&w=balancer_$APP\&sw=$NODE\&mime=prop 2>/dev/null | grep activation | cut -d'=' -f2)
+			STATUS_LIST[$i-1]=$STATUS
+		done
+		echo "$NODE from $APP is active in:" 
+		for i in $(seq 1 $count) ; do
+			if [ ${STATUS_LIST[$i-1]} = "ACT" ]
+			then
+				echo "${WEBSERVERS[$i-1]}"
+			fi
+		done
+		;;
+	*) 	usage ;;
+esac
+

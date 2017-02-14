@@ -1,0 +1,34 @@
+#!/bin/bash
+
+DB=${1,,}
+PASS=""
+PROFILE=""
+
+if [ "$USER" != "oracle" ]; then
+        echo "Error!! only execute as oracle!"
+        exit 1
+fi
+
+if [ $DB = "front" ]; then
+        PROFILE="/home/oracle/.bash_FRONTprofile"
+	PASS="system/v3ranit0by3@FRONTPRD"
+elif [ $DB ="back" ]; then
+        PROFILE="/home/oracle/.bash_profile"
+	PASS="system/v3ranit0by3@PRDRBOPRD"
+else
+        PROFILE="/home/oracle/.bash_profileBMS"
+	PASS="system/v3ranit0by3@BMSPRD"
+fi
+
+. $PROFILE 2>/dev/null
+DATA=$($ORACLE_HOME/bin/sqlplus -s $PASS @/usr/local/nagios/libexec/check_oracle_connections.sql | grep . | tr -t '\t' ' ' | tr -s ' ' | tr -t ' ' '=' | tr -t '\n' ' ')
+if [ $? != 0 ]; then
+	STATUS=CRITICAL
+	EXIT_STATUS=2
+else
+	STATUS=OK
+	EXIT_STATUS=0
+fi
+
+echo -n "Oracle established sessions $STATUS | $DATA"
+exit $EXIT_STATUS

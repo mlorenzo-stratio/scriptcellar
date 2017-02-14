@@ -1,0 +1,48 @@
+#!/bin/bash
+
+USER1="/usr/local/nagios/libexec"
+
+HOST=$1
+SNMP_COMMUNITY=$2
+TYPE=${3:-"stats"}
+
+OK=0
+WARNING=1
+CRITICAL=2
+UNKNOWN=3
+
+tmp=$(mktemp -p /dev/shm)
+tmp2=$(mktemp -p /dev/shm)
+
+MSG="Infinispan $TYPE"
+case $TYPE in
+	stats) snmpget -v2c -c $SNMP_COMMUNITY $HOST 'NET-SNMP-EXTEND-MIB::nsExtendOutputFull."check_infinispan_stats"' 2>/dev/null | sed -e "s/^.*STRING: //" | tr -t ':' ' ' > $tmp ;;
+	*) echo "Type '$TYPE' unknown!!" ; exit $UNKNOWN ;;
+esac
+
+dos2unix -q $tmp 
+if grep -q "NOT_RUNNING" $tmp; then
+	echo "$MSG NOT running!!"
+	rm -f $tmp $tmp2
+	exit $CRITICAL
+fi
+
+if grep -q "No Such Instance currently exists at this OID" $tmp; then
+	echo "Unable to check! $HOST's SNMP service is not configured"
+	rm -f $tmp $tmp2
+	exit $UNKNOWN
+fi
+
+if grep -q "No such file or directory" $tmp; then
+        echo "$MSG: missing script!!"
+        rm -f $tmp $tmp2
+        exit $CRITICAL
+fi
+
+PERFDATA=""
+while read var value ; do
+	PERFDATA="$PERFDATA $var=$value;;;"
+done < $tmp
+
+rm -f $tmp $tmp2
+echo "$MSG OK |$PERFDATA"

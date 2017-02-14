@@ -1,0 +1,652 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0 | cut -d '_' -f1)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+
+PARENT_COMMAND=$(ps $PPID | tail -n 1 | awk "{print \$5}")
+PARENT_SCRIPT=$(ps $PPID | tail -n 1 | awk "{print \$6}")
+if [ "$PARENT_COMMAND" = "-bash" -a "$PARENT_SCRIPT" != " " ]; then
+        echo "Cannot call \`$(basename $0)\` directly!!"
+	echo "Use $SCRIPTNAME instead"
+	cleanTemps
+        exit $WRONG_SCRIPT_EXECUTION
+fi
+
+### MAIN ###
+# Get action to perform
+wait_time=30
+action=$1
+shift
+export ENABLED_LOG="yes"
+case $action in
+	list_apps)
+		retrieve_configuration
+		getApps
+	;;
+	list_servers)
+		retrieve_configuration
+		getServers
+	;;
+	list_nodes)
+		retrieve_configuration
+		getNodeList
+	;;
+	deploy_war)
+		check_arg 1 "deploy_war <app1...appN> [<server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+		getAppsServers $*
+		for app in $apps; do
+			$MYDIR/deploy_war $app $servers
+			output=$?
+			if [ "$output" != 0 ]; then
+				exit $output
+			fi
+		done
+	;;
+	copy_war)
+		check_arg 1 "copy_war <app1...appN> [<server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+		getAppsServers $*
+		for app in $apps; do
+			$MYDIR/copy_war $app $servers
+			output=$?
+			if [ "$output" != 0 ]; then
+				exit $output
+			fi
+		done
+	;;
+	graceful_deploy)
+		check_arg 1 "graceful_deploy [wait_time] <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+		if isNumber $1; then
+			wait_time=$1
+			shift
+			app=$1
+                        shift
+		elif ! isApp $1 ;then
+                        echo "ERROR!! '$1' is not a number nor a valid application"
+                        usage
+                        echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+                        cleanTemps
+                        exit $INVALID_ARGUMENT
+		else
+			app=$1
+			shift
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		getNodesServers $*
+		echo "$* => ($app) nodes=$(echo $nodes | tr -t '\n' ' ')"
+		log '#main#' "START Graceful Deploy: $app ($nodes)"
+		for node in $nodes; do
+			export keep_output="yes"
+               		$MYDIR/balancer_ctl out $node
+			if isBalancerConfigured $app; then
+                       		wait_time $wait_time "Waiting for JBoss to finish serving requests"
+			fi
+			if [ ! $STG ]; then downtime "$node" ; fi
+			$MYDIR/jboss_ctl disable $app "$node"
+			$MYDIR/jboss_ctl stop $app "$node"
+			BATCH="yes" $MYDIR/deploy_war $app $node
+			if [ $? != 0 ]; then
+				log '#main#' "END Graceful Deploy: $app ($servers,$nodes)"
+				unlock "process_$app"
+				cleanTemps
+				exit $GRACEFUL_DEPLOY_ERROR
+			fi
+			$MYDIR/jboss_ctl enable $app "$node"
+			$MYDIR/jboss_ctl start $app "$node"
+			if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+				$MYDIR/jboss_ctl stop $app "$node"
+				log '#main#' "END Graceful Deploy: $app ($nodes)"
+				unlock "process_$app"
+				cleanTemps
+				exit $GRACEFUL_DEPLOY_ERROR
+			fi
+			$MYDIR/balancer_ctl in $node
+			# TODO: Delete Centreon downtime for $node
+			#if [ ! $STG ]; then delete_downtime "$node" ; fi
+		done
+		log '#main#' "END Graceful Deploy: $app ($nodes)"
+		unlock "process_$app"
+	;;
+	full_deploy)
+		check_arg 1 "full_deploy [wait_time] <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+                if isNumber $1; then
+                        wait_time=$1
+                        shift
+			app=$1
+                        shift
+		elif ! isApp $1 ;then
+                        echo "ERROR!! '$1' is not a number nor a valid application"
+                        usage
+                        echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+                        cleanTemps
+                        exit $INVALID_ARGUMENT
+		else
+			app=$1
+			shift
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		parseNodesServers $*
+		echo "$* => nodes=$(echo $nodes | tr -t '\n' ' ') servers=$(echo $servers | tr -t '\n' ' ')"
+		log '#main#' "START Full Deploy: $app ($servers,$nodes)"
+		# Enable $app maintenance page if all nodes selected and PRD environment
+		if [ ! $STG ]; then
+			if [ $ALLNODES ]; then
+				$MYDIR/maintenance_ctl enable $app
+			fi
+		fi
+
+		# Disable & stop JBoss
+		for server in $servers; do
+			_nodes=$(getNodes $app 'application' $server)
+			if [ ! $STG ]; then
+				for node in $_nodes; do
+					downtime "$node"
+				done
+			fi
+			$MYDIR/jboss_ctl disable $app "$server"
+			$MYDIR/jboss_ctl stop $app "$server"
+		done
+		for node in $nodes; do
+			# get server from node so we can deploy later on those servers
+			nodes_servers="$nodes_servers $(getServer $node)"
+			if [ ! $STG ]; then downtime "$node"; fi
+			$MYDIR/jboss_ctl disable $app "$node"
+			$MYDIR/jboss_ctl stop $app "$node"
+		done
+		for server in $servers; do
+			_nodes="$_nodes $(getNodes $app 'application' $server)"
+		done
+		_nodes=$(echo $nodes $_nodes | sed -e "s/^ //" | tr -t ' ' '\n' | sort -u | tr -t ' ' '\n')
+
+		# Deploy $app on every $server
+		for node in $_nodes; do
+			BATCH="yes" $MYDIR/deploy_war $app $node
+			if [ $? != 0 ]; then
+				log '#main#' "END Full Deploy: $app ($servers,$nodes)"
+				unlock "process_$app"
+				cleanTemps
+				exit $DEPLOY_ERROR
+			fi
+		done
+
+		echo -e "\nProceed to perform manual operations now.\nPress Enter to continue"
+		read foo
+
+		# Enable & start JBoss
+		rm -f $TMP
+		for node in $_nodes; do
+			$MYDIR/jboss_ctl enable $app $node
+			$MYDIR/jboss_ctl start $app $node
+			#_nodes=$(getNodes $app 'application' $server)
+			#for node in $_nodes; do
+				# TODO: Delete Centreon downtime for $node
+				#if [ ! $STG ]; then delete_downtime "$node" ; fi
+			#done
+		done
+		unset keep_output
+		# Wait for JBoss to be available
+		wait_time $wait_time "Waiting for JBoss to start"
+		# Show JBoss nodes' status
+		$MYDIR/jboss_ctl status $app
+		rm -f $TMP
+		# Disable $app maintenance page if all nodes selected and PRD environment
+		if [ ! $STG ]; then
+			if [ $ALLNODES ]; then
+				export keep_output="yes"
+				$MYDIR/maintenance_ctl disable $app
+			fi
+		fi
+		log '#main#' "END Full Deploy: $app ($servers,$nodes)"
+		unlock "process_$app"
+	;;
+	graceful_restart)
+		check_arg 1 "graceful_restart [wait_time] <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+		if isNumber $1; then
+                        wait_time=$1
+                        shift
+			app=$1
+                        shift
+		elif ! isApp $1 ;then
+                        echo "ERROR!! '$1' is not a number nor a valid application"
+                        usage
+                        echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+                        cleanTemps
+                        exit $INVALID_ARGUMENT
+		else
+			app=$1
+			shift
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		getNodesServers $*
+		echo "$* => ($app) nodes=$(echo $nodes | tr -t '\n' ' ')"
+		log '#main#' "START Graceful Restart: $app ($nodes)"
+		for node in $nodes; do
+			export keep_output="yes"
+               		$MYDIR/balancer_ctl out $node
+			if isBalancerConfigured $app; then
+                       		wait_time $wait_time "Waiting JBoss to finish serving requests"
+			fi
+			if [ ! $STG ]; then downtime "$node" ; fi
+			$MYDIR/jboss_ctl disable $app "$node"
+			$MYDIR/jboss_ctl stop $app "$node"
+			$MYDIR/jboss_ctl enable $app "$node"
+			$MYDIR/jboss_ctl start $app "$node"
+			if ! $MYDIR/jboss_ctl waitfornode $app "$node" ; then
+				$MYDIR/jboss_ctl stop $app "$node"
+				log '#main#' "END Graceful Restart: $app ($nodes)"
+				unlock "process_$app"
+				cleanTemps
+				exit $GRACEFUL_RESTART_ERROR
+			fi
+			$MYDIR/balancer_ctl in $node
+			# TODO: Delete Centreon downtime for $node
+			#if [ ! $STG ]; then delete_downtime "$node" ; fi
+		done
+		log '#main#' "END Graceful Restart: $app ($nodes)"
+		unlock "process_$app"
+	;;
+	full_restart)
+                check_arg 1 "full_restart [wait_time] <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+                if isNumber $1; then
+                        wait_time=$1
+                        shift
+			app=$1
+                        shift
+                elif ! isApp $1; then
+                        echo "ERROR!! '$1' is not a number nor a valid application"
+                        usage
+                        echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+                        cleanTemps
+                        exit $INVALID_ARGUMENT
+		else
+			app=$1
+			shift
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		parseNodesServers $*
+		echo "$* => nodes=$(echo $nodes | tr -t '\n' ' ') servers=$(echo $servers | tr -t '\n' ' ')"
+		log '#main#' "START Full Restart: $app ($servers,$nodes)"
+		# Enable $app maintenance page if all nodes selected and PRD environment
+		if [ ! $STG ]; then
+			if [ $ALLNODES ]; then
+				$MYDIR/maintenance_ctl enable $app
+			fi
+		fi
+
+		# Disable & stop JBoss
+		for server in $servers; do
+			_nodes=$(getNodes $app 'application' $server)
+			if [ ! $STG ]; then
+				for node in $_nodes; do
+					downtime "$node"
+				done
+			fi
+			$MYDIR/jboss_ctl disable $app "$server"
+			$MYDIR/jboss_ctl stop $app "$server"
+		done
+		for node in $nodes; do
+			# get server from node so we can deploy later on those servers
+			nodes_servers="$nodes_servers $(getServer $node)"
+			if [ ! $STG ]; then downtime "$node"; fi
+			$MYDIR/jboss_ctl disable $app "$node"
+			$MYDIR/jboss_ctl stop $app "$node"
+		done
+		for server in $servers; do
+			_nodes="$_nodes $(getNodes $app 'application' $server)"
+		done
+		_nodes=$(echo $nodes $_nodes | sed -e "s/^ //" | tr -t ' ' '\n' | sort -u | tr -t ' ' '\n')
+
+		echo -e "\nProceed to perform manual operations now.\nPress Enter to continue"
+		read foo
+
+		# Enable & start JBoss
+		rm -f $TMP
+		for node in $_nodes; do
+			$MYDIR/jboss_ctl enable $app $node
+			$MYDIR/jboss_ctl start $app $node
+			#_nodes=$(getNodes $app 'application' $server)
+			#for node in $_nodes; do
+				# TODO: Delete Centreon downtime for $node
+				#if [ ! $STG ]; then delete_downtime "$node" ; fi
+			#done
+		done
+		unset keep_output
+		# Wait for JBoss to be available
+		wait_time $wait_time "Waiting for JBoss to start"
+		# Show JBoss nodes' status
+		$MYDIR/jboss_ctl status $app
+		rm -f $TMP
+		# Disable $app maintenance page if all nodes selected and PRD environment
+		if [ ! $STG ]; then
+			if [ $ALLNODES ]; then
+				export keep_output="yes"
+				$MYDIR/maintenance_ctl disable $app
+			fi
+		fi
+		log '#main#' "END Full Restart: $app ($servers,$nodes)"
+		unlock "process_$app"
+	;;
+	graceful_stop)
+		check_arg 1 "graceful_stop [wait_time] <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+                if isNumber $1; then
+                        wait_time=$1
+                        shift
+			app=$1
+                        shift
+                elif ! isApp $1; then
+                        echo "ERROR!! '$1' is not a number nor a valid application"
+                        usage
+                        echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+                        cleanTemps
+                        exit $INVALID_ARGUMENT
+		else
+			app=$1
+			shift
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		getNodesServers $*
+		echo "$* => ($app) nodes=$(echo $nodes | tr -t '\n' ' ')"
+		log '#main#' "START Graceful stop: $app ($nodes)"
+		for node in $nodes; do 
+			export keep_output="yes"
+               		$MYDIR/balancer_ctl out $node
+			if isBalancerConfigured $app; then
+                       		wait_time $wait_time "Waiting for JBoss to finish serving requests"
+			fi
+			if [ ! $STG ]; then downtime "$node" ; fi
+			$MYDIR/jboss_ctl disable $app "$node"
+			$MYDIR/jboss_ctl stop $app "$node"
+		done
+		log '#main#' "END Graceful stop: $app ($nodes)"
+		unlock "process_$app"
+	;;
+	full_stop)
+		check_arg 1 "full_stop <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+		if isApp $1 ;then
+			app=$1
+			shift
+		else
+			echo "ERROR!! '$1' is not a valid application"
+			echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+			cleanTemps
+			exit $NON_EXISTANT_APP
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		parseNodesServers $*
+		echo "$* => nodes=$(echo $nodes | tr -t '\n' ' ') servers=$(echo $servers | tr -t '\n' ' ')"
+		log '#main#' "START Full stop: $app ($servers,$nodes)"
+
+		# Disable & stop JBoss
+		temp_servers=( ${servers[*]} )
+		servers_no=${#temp_servers[@]}
+		cservers=0
+		for server in $servers; do
+			let cservers=cservers+1
+			_nodes=$(getNodes $app 'application' $server)
+			if [ ! $STG ]; then
+				for node in $_nodes; do
+					downtime "$node"
+				done
+			fi
+			$MYDIR/jboss_ctl disable $app "$server"
+			# Enable $app maintenance page if all nodes selected and only one server lastingand PRD environment
+			if [ $ALLNODES ] && [ "$cservers" = "$servers_no" ]; then
+				if [ ! $STG ]; then
+					$MYDIR/maintenance_ctl enable $app
+				fi
+			fi
+			$MYDIR/jboss_ctl stop $app "$server"
+		done
+		for node in $nodes; do
+			if [ ! $STG ]; then
+				downtime "$node"
+			fi
+			$MYDIR/jboss_ctl disable $app "$node"
+			$MYDIR/jboss_ctl stop $app "$node"
+		done
+		log '#main#' "END Full stop: $app ($servers,$nodes)"
+		unlock "process_$app"
+	;;
+	graceful_start)
+		check_arg 1 "graceful_start <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+		if isApp $1 ;then
+			app=$1
+			shift
+		else
+			echo "ERROR!! '$1' is not a valid application"
+			echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+			cleanTemps
+			exit $NON_EXISTANT_APP
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		getNodesServers $*
+		echo "$* => ($app) nodes=$(echo $nodes | tr -t '\n' ' ')"
+		log '#main#' "START Graceful start: $app ($nodes)"
+		for node in $nodes; do
+			export keep_output="yes"
+			$MYDIR/jboss_ctl enable $app "$node"
+			$MYDIR/jboss_ctl start $app "$node"
+			$MYDIR/jboss_ctl waitfornode $app "$node"
+			$MYDIR/balancer_ctl in $node
+			# TODO: Delete Centreon downtime for $node
+			#if [ ! $STG ]; then delete_downtime "$node" ; fi
+		done
+		log '#main#' "END Graceful start: $app ($nodes)"
+		unlock "process_$app"
+	;;
+	full_start)
+		check_arg 1 "full_start [wait_time] <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		retrieve_configuration
+                if isNumber $1; then
+                        wait_time=$1
+                        shift
+			app=$1
+                        shift
+                elif ! isApp $1; then
+                        echo "ERROR!! '$1' is not a number nor a valid application"
+                        usage
+                        echo "Run \`$SCRIPTNAME list_apps\` for a list of valid applications "
+                        cleanTemps
+                        exit $INVALID_ARGUMENT
+		else
+			app=$1
+			shift
+		fi
+		lock "process_$app"
+		export TMP=$TMP$app
+		parseNodesServers $*
+		echo "$* => nodes=$(echo $nodes | tr -t '\n' ' ') servers=$(echo $servers | tr -t '\n' ' ')"
+		log '#main#' "START Full start: $app ($servers,$nodes)"
+
+		# Enable & start JBoss
+		for server in $servers; do
+			$MYDIR/jboss_ctl enable $app "$server"
+			$MYDIR/jboss_ctl start $app "$server"
+			#_nodes=$(getNodes $app 'application' $server)
+			#if [ ! $STG ]; then
+			#	for node in $_nodes; do
+			#	TODO: Delete Centreon downtime for $node
+			#	done
+			#fi
+		done
+		unset keep_output
+		# Wait for JBoss to be available
+		wait_time $wait_time "Waiting for JBoss to start"
+		# Show JBoss nodes' status
+		$MYDIR/jboss_ctl status $app
+		rm -f $TMP
+		# Disable $app maintenance page if all nodes selected and PRD environment
+		if [ ! $STG ]; then
+			if [ $ALLNODES ]; then
+				export keep_output="yes"
+				$MYDIR/maintenance_ctl disable $app
+			fi
+		fi
+		log "END Full start: $app ($servers,$nodes)"
+		unlock "process_$app"
+	;;
+	jboss)
+		check_arg 2 "jboss <start|stop|restart|enable|disable|kill|info> <app> [<node1...nodeN|server1...serverN>]" $* || { cleanTemps ; exit $? ; }
+		action=$1
+		shift
+		app=$1
+		shift
+		case "$action" in
+			start|stop|restart|enable|disable|info|kill) ;;
+			*)              usage ; exit $INVALID_ARGUMENT;;
+		esac
+		retrieve_configuration
+		if ! isApp $app; then
+			echo "$SCRIPTNAME: Unknown application \`$app\`"
+			cleanTemps
+			exit $NON_EXISTANT_APP
+		fi
+		getNodesServers $*
+                $MYDIR/jboss_ctl $action $app $nodes | awk ' !x[$0]++'
+	;;
+	terracotta)
+		check_arg 2 "terracotta <app> <start|restart> [--delete]\n       <app> <stop|kill|info>" $* || { cleanTemps ; exit $? ; }
+		app=$1
+		action=$2
+		delete=$3
+		if [ "$delete" != "--delete" ]; then
+			delete=""
+		fi
+		case "$action" in
+			start|stop|info|kill|restart) ;;
+			*)              usage ;;
+		esac
+		retrieve_configuration
+		if ! isApp $app; then
+			usage
+			cleanTemps
+			exit $NON_EXISTANT_APP
+		fi
+		$MYDIR/terracotta_ctl $app "$action" $delete
+	;;
+	infinispan)
+		check_arg 2 "infinispan <app> <start|stop|kill|info|restart>" $* || { cleanTemps ; exit $? ; }
+		app=$1
+		action=$2
+		case "$action" in
+			start|stop|info|kill|restart) ;;
+			*)              usage ;;
+		esac
+		retrieve_configuration
+		if ! isApp $app; then
+			usage
+			cleanTemps
+			exit $NON_EXISTANT_APP
+		fi
+		$MYDIR/infinispan_ctl $app "$action" $delete
+	;;
+	balancer)
+		check_arg 2 "balancer <enable|disable|status> <node1...nodeN>" $* || { cleanTemps ; exit $? ; }
+		action=$1
+		shift
+		nodes=$*
+		$MYDIR/balancer_ctl $action $nodes
+	;;
+	maintenance)
+		check_arg 1 "maintenance <enable|disable|status> <app1..appN>" $* || { cleanTemps ; exit $? ; }
+		action=$1
+		shift
+		apps=$*
+		if [ $STG ]; then
+			echo "Maintenance management disabled on STG"
+			cleanTemps
+			exit $UNKNOWN_OPTION_SPECIFIED
+		fi
+		$MYDIR/maintenance_ctl $action $apps
+	;;
+	jon)
+		if [ $STG ]; then
+			echo "JON management disabled on STG"
+			cleanTemps
+			exit $UNKNOWN_OPTION_SPECIFIED
+		fi
+		check_arg 2 "jon agent <start|stop|restart|kill|info> <server1...serverN>\n    server <start|stop|restart|kill|info>" $* || { cleanTemps ; exit $? ; }
+		env=$1
+		shift
+		action=$1
+		shift
+		action=${action,,}
+		case "$action" in
+			start|stop|restart|info|kill|restart) ;;
+			*)              usage ;;
+		esac
+		if [ "$env" = "agent" ]; then
+			check_arg 1 "" $* || { cleanTemps ; exit $? ; }
+		fi
+		servers=$*
+		retrieve_configuration
+		$MYDIR/jon_ctl $env $action $servers
+	;;
+        clean_temp)
+		check_arg 1 "clean_temp <app1...appN>" $* || { cleanTemps ; exit $? ; }
+		EXIT_STATUS=0
+		retrieve_configuration
+		for app in $*; do
+                        if ! isApp $app; then
+                                echo "$SCRIPTNAME: Unknown application \`$app\`"
+                                continue
+                        fi
+                	echo -n "Cleaning $app temps... "
+			if [ -e "$LOCK_DIR/$app.pid" ]; then
+				_pid=$(cat $LOCK_DIR/$app.pid)
+				if kill -0 $_pid > /dev/null 2>&1; then
+					echo -e "ERROR!!\n\t - Another process ($_pid) is performing actions on application \`$app\`" 
+					EXIT_STATUS=$LOCKED_APPLICATION 
+					continue
+				fi
+			fi
+			rm -fr $LOCK_DIR/$app $LOCK_DIR/$app.pid
+			echo "done."
+		done
+		exit $EXIT_STATUS 
+        ;;
+	log)
+		app=$1
+		shift
+		case "$action" in
+			log) ;;
+			*)              usage ; exit $INVALID_ARGUMENT ;;
+		esac
+		retrieve_configuration
+		if [ -n "$app" ] && ! isApp $app; then
+			echo "$SCRIPTNAME: Unknown application \`$app\`"
+			cleanTemps
+			exit $NON_EXISTANT_APP
+		fi
+		if [ -n "$app" ]; then
+			less $LOGDIR/$app
+		else
+			less $MAINLOG
+		fi
+	;;
+
+	-h  | --help)		usage ; cleanTemps ; exit 0 ;;
+	*)			echo "$SCRIPTNAME: invalid option -- $action"
+				echo "Try \`$SCRIPTNAME --help' for more information."
+				cleanTemps
+				exit $UNKNOWN_OPTION_SPECIFIED ;;
+esac
+cleanTemps

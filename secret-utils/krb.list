@@ -1,0 +1,19 @@
+# SERVICES
+#<principal> | <fqdn> | <vault_url>
+# In <vault_url> column the other columns' values may be referred as follows:
+# $principal | $fqdn  | -----------
+
+zookeeper | gosec1.labs.stratio.com | gosec/gosec-zk/$fqdn/krb
+zookeeper | gosec2.labs.stratio.com | gosec/gosec-zk/$fqdn/krb
+zookeeper | gosec3.labs.stratio.com | gosec/gosec-zk/$fqdn/krb
+
+# USERS
+#<principal> |  | <vault_url>
+gosec-saj |  | gosec/gosec-spark-admin-job/krb
+gosec-management |  | gosec/gosec-management/krb
+gosec-sso |  | gosec/gosec-sso/krb
+kafka |  | gosec/gosec-kafka/krb
+viewer |  | viewer/$principal/krb
+crossdata |  | crossdata/$principal/krb
+# stratio |  | <vault_URL?>
+# datio |  | <vault_URL?>

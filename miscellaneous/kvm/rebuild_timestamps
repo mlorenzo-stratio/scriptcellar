@@ -1,0 +1,72 @@
+#!/bin/bash
+VM_CATALOG_URL="http://cerberus.rumbo.com/vm_catalog"
+VM_CATALOG=$(mktemp -p /dev/shm)
+if [ ! -x "/usr/bin/lynx" ]; then
+        echo "Lynx not installed!! /usr/bin/lynx"
+        exit 2
+fi
+
+if [ "$USER" != "root" ]; then
+	echo "Can only be run as root"
+	exit 1
+fi
+
+usage(){
+	echo "Usage: $0 <server|app|PRD|STG>"
+}
+
+show_servers(){
+	echo
+	echo "Available servers are:"
+	while IFS=';' read server desc cpu ram hypervisor hdsize storage ; do
+		if [[ ! $desc =~ "APP" ]]; then
+			continue
+		fi
+		echo -ne "\t$server: "
+		# STG APP transfer #1
+		echo $desc | sed -e "s/^.*APP \([^ ]*\) .*$/\1/"
+	done < $VM_CATALOG
+}
+
+lynx -dump "$VM_CATALOG_URL" > $VM_CATALOG
+
+if [ $# -gt 1 -o $# = 0 ]; then 
+	usage
+	show_servers
+	exit 2
+fi
+
+ARG=$1
+
+# PRD environment
+if [ "$ARG" = "PRD" ]; then
+	SERVERS=$(grep "PRD APP" $VM_CATALOG | cut -d';' -f1 | tr -t '\n' ' ')
+# STG environment
+elif [ "$ARG" = "STG" ]; then
+	SERVERS=$(grep "STG APP" $VM_CATALOG | cut -d';' -f1 | tr -t '\n' ' ')
+# server
+elif grep -q "^$ARG;" $VM_CATALOG; then
+	SERVERS=$(grep ^$ARG $VM_CATALOG | cut -d ';' -f1)
+# application
+elif grep -q "APP $ARG " $VM_CATALOG; then
+	SERVERS=$(grep "APP $ARG " $VM_CATALOG | cut -d ';' -f1)
+else
+	usage
+	show_servers
+	exit 2
+fi
+
+echo "Rebuilding timestamps:"
+for server in $SERVERS; do
+	echo -ne "\t"
+	grep "^$server;" $VM_CATALOG | sed -e "s/^.*APP \([^ ]*\) .*$/\1/" | tr -d '\n'
+	echo -ne "@$server: "
+	output=$(ssh $server service jboss rebuild-timestamp 2>&1 | tr -t '\n' ' ')
+	if [ $? != 0 ]; then
+		echo "ERROR! $output"
+	else
+		echo OK.
+	fi
+done
+
+rm -fr $VM_CATALOG

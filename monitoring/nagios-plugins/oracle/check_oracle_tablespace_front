@@ -1,0 +1,81 @@
+#!/bin/bash
+
+TABLESPACE=$1
+WARNING=$2
+CRITICAL=$3
+
+TMP=$(mktemp)
+
+has_pmon(){
+        if ps -fe | grep -v grep | grep -E "ora_pmon_RUMPRD" -q ; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+HOST="$(echo $HOSTNAME | cut -d '.' -f1)"
+EXT_CMD=""
+
+if has_pmon ; then
+        sudo -u oracle /usr/local/nagios/libexec/check_tablespace_front $TABLESPACE > $TMP
+        if [ $? != 0 ]; then
+                echo "Tablespace ($HOST) - Error checking $TABLESPACE"
+                exit 2
+        fi
+else
+        if [ "$HOST" = "madup01" ]; then
+                HOST="madup02"
+        else
+                HOST="madup01"
+        fi
+        ssh $HOST sudo -u oracle /usr/local/nagios/libexec/check_tablespace_front $TABLESPACE > $TMP
+        if [ $? != 0 ]; then
+                echo "Tablespace ($HOST) - Error checking $TABLESPACE"
+                exit 2
+        fi
+	EXT_CMD="ssh $HOST"
+fi
+
+DISK_SIZE=$(echo "scale=3; $(cat $TMP | awk '{print $1}') * 1024" | bc)
+FREE=$(echo "scale=3; $(cat $TMP | awk '{print $3}') * 1024" | bc)
+USED=$(echo "scale=3; $(cat $TMP | awk '{print $2}') * 1024" | bc)
+
+WARNING=$(echo "$WARNING * 1024 * 1024" | bc)
+CRITICAL=$(echo "$CRITICAL * 1024 * 1024" | bc)
+
+$EXT_CMD /usr/local/nagios/libexec/check_oracle_extensions_front $TABLESPACE $(echo "$WARNING / 1024" | bc) $(echo "$CRITICAL / 1024" | bc)
+EXTENSIONS_FOUND=$?
+
+lt(){
+	num1=$1
+	num2=$2
+	if (( $(echo "${num1} < ${num2}" | bc) == 1 )); then
+		return 0;
+	else
+		return 1;
+	fi
+}
+
+
+if lt $WARNING $FREE || [ $EXTENSIONS_FOUND = 0 ]; then
+        TEXT="Tablespace ($HOST) $TABLESPACE OK - TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB ($(echo "scale=3; $FREE * 100 / $DISK_SIZE" | bc)%)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+        rm $TMP
+        exit 0
+fi
+if lt $FREE $WARNING && lt $CRITICAL $FREE || [ $EXTENSIONS_FOUND = 1 ]; then
+        TEXT="Tablespace ($HOST) $TABLESPACE WARNING - TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB (<$(echo "scale=1; $WARNING / 1024 / 1024" | bc)GB)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+        rm $TMP
+        exit 1
+fi
+if lt $FREE $CRITICAL || [ $EXTENSIONS_FOUND = 2 ]; then
+        TEXT="Tablespace ($HOST) $TABLESPACE CRITICAL - TOTAL: $(echo "scale=3; $DISK_SIZE / 1024 / 1024" | bc)GB USED: $(echo "scale=3; $USED / 1024 / 1024" | bc)GB ($(echo "scale=3; $USED * 100 / $DISK_SIZE" | bc)%) FREE: $(echo "scale=3; $FREE / 1024 / 1024" | bc)GB (<$(echo "scale=1; $CRITICAL / 1024 / 1024" | bc)GB)|size=$(echo "$DISK_SIZE * 1024" | bc)""B"" used=$(echo "$USED * 1024" | bc)""B"
+        echo $TEXT
+        rm $TMP
+        exit 2
+fi
+
+rm $TMP
+exit 0

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+WARNING_THRESHOLD=$1
+CRITICAL_THRESHOLD=$2
+
+if [ "$USER" != "oracle" ]; then
+        echo "Error!! only execute as oracle!"
+        exit 1
+fi
+
+PROFILE="/home/oracle/.bash_FRONTprofile"
+PASS="system/v3ranit0by3@FRONTPRD"
+
+EXIT_STATUS=0
+STATUS=OK
+
+. $PROFILE 2>/dev/null
+DATA=$($ORACLE_HOME/bin/sqlplus -s $PASS @/usr/local/nagios/libexec/check_oracle_hotel_established_sessions.sql | tr -d ' ' | tr -d '\n')
+if [ $? != 0 ]; then
+	STATUS=CRITICAL
+	EXIT_STATUS=2
+fi
+
+if [ $DATA -gt $CRITICAL_THRESHOLD ]; then
+	EXIT_STATUS=2
+	STATUS=CRITICAL
+elif [ $DATA -gt $WARNING_THRESHOLD ]; then
+	EXIT_STATUS=1
+	STATUS=WARNING
+fi
+
+echo "Hotel established sessions $STATUS, $DATA sessions established | hotel_established_sessions=$DATA"
+exit $EXIT_STATUS

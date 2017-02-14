@@ -1,0 +1,433 @@
+#!/bin/bash
+
+# DECLARE GLOBAL VARIABLES
+declare VERBOSE="no"
+declare PRETTYFY JQ
+declare vault_host vault_port vault_token current_pwd
+declare -a mounted_paths
+declare timeout="2"
+
+# CLI GLOBAL VARIABLES
+declare is_command cmd cmd_history restcmd key len pos history_index
+declare -a cmd_history
+declare DEBUG="no"
+declare DEBUGFILE
+DEBUGFILE="/tmp/debug"
+
+
+function debug(){
+    local msg="$*"
+    if [[ $DEBUG == "yes" ]]; then
+        echo "$msg" >> $DEBUGFILE
+    fi
+}
+
+################################################# CLI FUNCTIONS #################################################
+
+# add $cmd to command history @cmd_history
+function add_cmd(){
+    local cmd="$*"
+    local -a new_history
+    new_history=( "$cmd" )
+    for old_cmd in "${cmd_history[@]}"; do
+        if [[ $old_cmd != $cmd ]]; then
+            new_history+=( "$old_cmd" )
+        fi
+    done
+    cmd_history=( "${new_history[@]}" )
+    local n=0
+    for cmd in "${cmd_history[@]}"; do
+        debug "cmd_history[$n]: $cmd"
+        let n+=1
+    done
+}
+
+
+# UP: returns previous cmd in history
+function get_prev_cmd(){
+    if [[ $history_index -lt $((${#cmd_history[@]}-1)) ]]; then
+        cmd="${cmd_history[$((++history_index))]}"
+        debug "cmd_history[$((history_index))]: $cmd"
+
+        # move the cursor to the beginning to print the command selected
+        [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
+
+        # print the command found in history
+        echo -n "$cmd"
+        tput el # clean to the end of the line
+        let pos=$((${#cmd}+1))
+        let len=${#cmd}
+    fi
+}
+
+# DOWN: returns next cmd in history
+function get_next_cmd(){
+    if [[ $history_index -gt 0 ]]; then
+        cmd="${cmd_history[$((--history_index))]}"
+        debug "cmd_history[$((history_index))]: $cmd"
+
+        # move the cursor to the beginning to print the command selected
+        [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
+
+        # print the command found in history
+        echo -n "$cmd"
+        tput el # clean to the end of the line
+        let pos=$((${#cmd}+1))
+        let len=${#cmd}
+    fi
+}
+################################################# CLI FUNCTIONS #################################################
+
+
+# Usage
+function help(){
+    cat <<EOH
+Usage: $0 -v <vault_host> -p <vault_port> -t <vault_token>
+EOH
+}
+
+# Print commands help
+function commands_help(){
+    local command="$1"
+    if [[ $command != "help" ]]; then
+        echo "Unknown command '$command'"
+    fi
+    cat <<EOCH
+Use one of the following:
+mount    umount    cd    ls    cat    put    rm    exit
+EOCH
+}
+
+# Check for given arguments
+function check_arg(){
+    local arg=$1
+    local msg=$2
+    if [[ ! $arg ]]; then
+        echo -e "ERROR! No $msg provided\n"
+        help ; exit 1
+    fi
+}
+
+# Print prompt
+function prompt(){
+    tput bold
+    echo -n "$(basename "$0")@$vault_host:$vault_port$current_pwd> "
+    tput sgr0
+}
+
+# Run command and prettyfy stdout
+function _run(){
+    local exit_status
+    tmp=$(mktemp -p /dev/shm -t .run.XXXX)
+    eval "$*" 2> "$tmp" # store stderr in $tmp
+    exit_status=$?
+    if [[ $VERBOSE == yes ]]; then
+        while IFS=$'\n' read line; do
+            echo "      > $line"
+        done < "$tmp"
+    fi
+    rm -f "$tmp"
+    return $exit_status
+}
+
+# simplified curl function
+function _curl(){
+    local endpoint="${1#/}" # remove initial '/' if exists
+    local data="$2"
+    # POST, GET, PUT, PATCH, DELETE
+    # http://www.restapitutorial.com/lessons/httpmethods.html
+    local method="${3:-GET}"
+    if [[ $data ]]; then
+        if [[ "$VERBOSE" = "yes" ]]; then
+            echo -e "url: https://$vault_host:$vault_port/v1/$endpoint\nmethod: $method\ndata:$data"
+        fi
+        _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+                      -H 'Content-type: application/json' \
+                      -d \"$data\" \
+                      \"https://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
+    else
+        if [[ "$VERBOSE" = "yes" ]]; then
+            echo -e "url: https://$vault_host:$vault_port/v1/$endpoint\nmethod: $method"
+        fi
+        _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+                      -H 'Content-type: application/json' \
+                      \"https://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
+    fi
+}
+
+# run command entered in CLI
+function run_cmd(){
+    local cmd="$*"
+    while IFS=$' ' read cmd arg1 arg2; do
+        case $cmd in
+            cd)    _cd "$arg1" ;;
+            ls)    _ls "$arg1" ;;
+            cat)   _cat "$arg1" ;;
+            put)   _put "$arg1" "$arg2" ;;
+            rm)    _rm "$arg1" ;;
+            mount) _mount "$arg1" ;;
+            umount) _umount "$arg1" ;;
+            exit)  exit ;;
+            "")    ;;
+            help|*) commands_help "$cmd" ;;
+        esac
+    done< <(echo "$cmd")
+}
+
+# mount function
+function _mount(){
+    local url="$1"
+    local data
+    if [[ ! $url ]]; then
+        echo "mounted paths:"
+        for path in "${mounted_paths[@]}"; do
+            if [[ $path ]]; then
+                echo "$path"
+            fi
+        done
+    # mount $url
+    else
+        # get full path if relative reference
+        if [[ ! "$url" =~ ^/ ]]; then
+            url="/sys/mounts/$current_pwd$url"
+        else
+            url="/sys/mounts$url"
+        fi
+        # check if already mounted in this session
+        if [[ ! "${mounted_paths[@]}" =~ $url ]]; then
+            data="{ \\\"type\\\": \\\"generic\\\", \\\"description\\\": \\\"$url secret backend\\\" }"
+            _curl "$url" "$data" "POST"
+            mounted_paths+=( "$url" )
+            echo "mounted '$url'"
+        else
+            echo "'$url' already mounted in this session."
+        fi
+    fi
+}
+
+# umount function
+function _umount(){
+    local url="$1"
+    if [[ ! $url ]]; then
+        echo "umount needs an argument"
+        _mount
+    fi
+    # get full path if relative reference
+    if [[ ! "$url" =~ ^/ ]] && [[ ! "$url" =~ ^/sys/mounts ]]; then
+        url="/sys/mounts/$current_pwd$url"
+    elif [[ ! "$url" =~  ^/sys/mounts ]]; then
+        url="/sys/mounts$url"
+    fi
+    _curl "$url" "" "DELETE"
+    mounted_paths=( "${mounted_paths[@]/$url}" ) # delete mounted mountpoint
+}
+
+# cd function
+function _cd(){
+    local url="$1"
+    if [[ $url == ".." ]]; then
+        url="${current_pwd%/*}"
+    elif [[ $url =~ ^/ ]]; then
+        : # do nothing url is perfect as it is
+    elif [[ $url ]]; then
+        url="$current_pwd/$url"
+    else
+        url="$current_pwd"
+    fi
+    if [[ "$1" != ".." ]] && ! _ls "$url" | grep -q "request_id"; then
+        echo "Error! '$url' not found"
+    else
+        current_pwd="$url"
+    fi
+}
+
+# ls function
+function _ls(){
+    local url
+    if [[ ! $1 =~ ^/ ]]; then
+        url="$current_pwd/$1"
+    else
+        url="$1"
+    fi
+    if [[ $url == '/' ]]; then
+        if [[ $JQ ]]; then
+            _cat /sys/mounts | jq '.data | keys'
+        else
+            _cat /sys/mounts
+        fi
+    elif [[ $url ]]; then
+        url="$url?list=true"
+    else
+        url="$current_pwd?list=true"
+    fi
+    _curl "$url"
+}
+
+# cat function
+function _cat(){
+    local url="$current_pwd/$1"
+    _curl "$url"
+}
+
+# rm function
+function _rm(){
+    local url="$current_pwd/$1"
+    _curl "$url" "" "DELETE"
+}
+
+# put function
+function _put(){
+    local url="$current_pwd/$1"
+    local data
+    debug "$data"
+    data="$(echo "$2" | sed -e "s/\"/\\\\\"/g")"
+    debug "$data"
+    _curl "$url" "$data" "POST"
+}
+
+# main function
+function main(){
+    local command tmpmsg
+    while getopts "v:p:t:h" opt; do
+        case $opt in
+            v) vault_host=$OPTARG ;;       ### GLOBAL VARIABLES ###
+            p) vault_port=$OPTARG ;;       ### GLOBAL VARIABLES ###
+            t) vault_token=$OPTARG ;;      ### GLOBAL VARIABLES ###
+            h|*) help ; exit 1; ;;
+        esac
+    done
+    # Define Vault default port if not specified
+    vault_port=${vault_port:-"8200"}
+
+    # Check for correct arguments
+    check_arg "$vault_host" "Vault host"
+    check_arg "$vault_token" "Vault token"
+
+    # Check connectivity
+    timeout $timeout bash -c "</dev/tcp/$vault_host/$vault_port"
+
+    # Use jq if available
+    PRETTYFY="$(which jq || true)"
+    if [[ $PRETTYFY ]]; then
+        PRETTYFY=" | $PRETTYFY '' "
+        JQ="true"
+    else
+        PRETTYFY=" | python -m json.tool"
+    fi
+
+    # BEGIN
+    # initialize variables
+    len=0
+    pos=1
+    history_index=-1
+
+    # print prompt
+    prompt
+
+    # Begin iteration
+    IFS=
+    while true; do
+        # read key and process
+        read -sN1 key
+        case $key in
+            $'\x1b') # CURSORS & SPECIAL CHARS
+                read -rsn1 -t 0.001 key # flush read
+                if [[ $key == "[" ]]; then
+                    read -rsn1 -t 0.001 key # flush read again
+                    case $key in
+                        $'\x41') # up cursor: older history
+                            get_prev_cmd
+                        ;;
+                        $'\x42') # down cursor: newer history
+                            get_next_cmd
+                        ;;
+                        $'\x43') # right cursor
+                            if [[ $pos -lt $((len+1)) ]]; then # if anything was typed allow to move cursor left
+                                tput cuf 1 # move cursor right
+                                let pos+=1 # increment cursor position
+                                debug "pos: $pos right"
+                            fi
+                        ;;
+                        $'\x44') # left cursor
+                            if [[ $pos -gt 1 ]]; then # if anything was typed and position>0 allow to move cursor left
+                                tput cub 1 # move cursor left
+                                let pos-=1 # decrement cursor position
+                                debug "pos: $pos left"
+                            fi
+                        ;;
+                    esac
+                fi
+            ;;
+            $'\x46') # END
+                tput cuf $((len-pos+1)) # move cursor right to the end
+                let pos=len+1
+            ;;
+            $'\x48') # HOME
+                tput cub $((pos-1)) # move cursor left to the beginning
+                let pos=1
+            ;;
+            $'\x0a') # ENTER
+                if [[ $cmd ]] && [[ ! "$cmd" =~ ^[[:space:]]+$ ]]; then
+                    cmd=$(echo "$cmd" | sed -e "s/^[[:space:]]\+\(.*\)/\1/g" -e "s/[[:space:]]\+$//g" | tr -s ' ')
+                    echo
+                    run_cmd "$cmd"
+                    is_command="true"
+                    add_cmd "$cmd"
+                    history_index=-1
+                else
+                    echo
+                    history_index=-1
+                    prompt
+                fi
+            ;;
+            $'\x7f') # BACKSPACE
+                if [[ $len != 0 ]] && [[ $pos -gt 1 ]]; then # if anything was typed and position>0 allow to delete
+                    echo -en "\b \b"
+                    let len-=1
+                    let pos-=1
+                    tmpmsg="${#cmd}: \"$cmd\""
+                    # remove $key in $((pos-1))
+                    cmd="${cmd:0:$((pos-1))}${cmd:$((pos)):${#cmd}}"
+                    tput el # clean to the end of the line
+                    restcmd="${cmd:$((pos-1)):${#cmd}}"
+                    echo -n "$restcmd"
+                    # reposition cursor after backspace only if we moved chars
+                    if [[ ${#restcmd} != 0 ]]; then tput cub ${#restcmd} ; fi
+                    debug "$tmpmsg => ${#cmd}: \"$cmd\""
+                    debug "pos: $pos, len: $len"
+                fi
+            ;;
+            $'\x7e') # ERASE
+                if [[ $len != 0 ]] && [[ $pos -lt $((len+1)) ]]; then # if anything was typed and position>0 allow to delete
+                    tput ech 1 # erase 1 character at $pos
+                    let len-=1
+                    tmpmsg="${#cmd}: \"$cmd\""
+                    cmd=${cmd:0:$((pos-1))}${cmd:${pos}:$((${#cmd}-1))}
+                    tput el # clean to the end of the line
+                    #cmd=${cmd::-1} # delete last character
+                    restcmd="${cmd:$((pos-1)):$((${#cmd}))}"
+                    echo -n "$restcmd"
+                    # reposition cursor after backspace only if we moved chars
+                    if [[ ${#restcmd} != 0 ]]; then tput cub ${#restcmd} ; fi
+                    debug "$tmpmsg => ${#cmd}: \"$cmd\""
+                    debug "pos: $pos, len: $len"
+                fi
+            ;;
+            $'\x20'|*) # NORMAL CHARS
+                tput ich 1 # insert chars rather than overwriting them
+                echo -n "$key" #| hexdump -C
+                let len+=1
+                let pos+=1
+                tmpmsg="${#cmd}: \"$cmd\""
+                # insert $key in $pos within $cmd string
+                cmd="${cmd:0:$((pos-2))}$key${cmd:$((pos-2)):${#cmd}}"
+                debug " => ${#cmd}: \"$cmd\""
+                debug "pos: $pos, len: $len"
+            ;;
+        esac
+        # print prompt if commadn was run
+        if [[ $is_command ]]; then prompt ; unset is_command cmd pos len ; history_index=-1 ; pos=1; fi
+    done
+}
+
+main "$@"

@@ -1,0 +1,33 @@
+#!/bin/bash
+
+DB=$1
+PASS=""
+PROFILE=""
+TNSPING="/u01/app/oracle/product/11.2.0/dbhome_1/bin/tnsping"
+
+if [ "$USER" != "oracle" ]; then
+	echo "Error!! only execute as oracle!"
+	exit 1
+fi
+
+if [ -z "$DB" ]; then
+	echo "No args specified."
+	exit 1
+fi
+
+if [ $DB = "front" ]; then
+        PROFILE="/home/oracle/.bash_FRONTprofile"
+	PASS="prdrmbw/mc3t1pdy35PM@FRONTPRD"
+	DB="FRONTPRD"
+elif [ $DB = "back" ]; then
+        PROFILE="/home/oracle/.bash_profile"
+	PASS="system/v3ranit0by3@PRDRBOPRD"
+	DB="PRDRBOPRD"
+else
+        PROFILE="/home/oracle/.bash_profileBMS"
+	PASS="system/v3ranit0by3@BMSPRD"
+	DB="BMSPRD"
+fi
+
+. $PROFILE 2>/dev/null
+$TNSPING $DB

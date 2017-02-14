@@ -1,0 +1,17 @@
+# CN    | "DNS:dns1,DNS:dns2,IP:ip1,IP:ip2,...,IP:ipN,DNS:DNSN" | VAULT_URL
+# In VAULT_URL column the other columns' values may be referred as follows:
+# $name | ----------------------------------------------------- | ---------
+
+admin-router | "IP:10.200.0.25,DNS:adminrouter.labs.stratio.com,DNS:master-1.labs.stratio.com,DNS:master-1" | stratio-paas/admin-router/x509-server-cert
+filebeat | "DNS:master-1.labs.stratio.com,DNS:metrics-1,DNS:agent-2.labs.stratio.com,DNS:agent-2,DNS:agent-3.labs.stratio.com,DNS:agent-3" | stratio-paas/filebeat/x509-auth/x509-client-cert
+gosec-management | "DNS:gosec3.labs.stratio.com,DNS:gosec3" | gosec/gosec-management/tls/x509-server-cert
+gosec-sso | "DNS:gosec2.labs.stratio.com,DNS:gosec2" | gosec/gosec-sso/tls/x509-server-cert gosec/gosec-sso/kafka/x509-auth/x509-client-cert
+gosec-kafka | "DNS:gosec1.labs.stratio.com,DNS:gosec1,DNS:gosec2.labs.stratio.com,DNS:gosec2,DNS:gosec3.labs.stratio.com,DNS:gosec3" | gosec/gosec-kafka/tls/x509-server-cert
+metronome | "IP:10.200.0.25,DNS:metronome.labs.stratio.com,DNS:master-1.labs.stratio.com,DNS:master-1" | stratio-paas/metronome/tls/x509-server-cert
+audit-job | "DNS:audit-job.marathon.mesos" | gosec/gosec-spark-admin-job/kafka/x509-auth/x509-client-cert
+viewer1 | "DNS:viewer4.marathon.mesos" | viewer/$name/x509-auth/x509-client-cert
+viewer-client | "DNS:viewer-client.marathon.mesos" | viewer/$name/tls/x509-server-cert
+crossdata1.labs.stratio.com | "DNS:crossdata.marathon.mesos,DNS:marathon-lb.marathon.mesos" | crossdata/$name/tls/x509-server-cert crossdata/$name/gosec-plugin/x509-auth/x509-client-cert
+crossdata2.labs.stratio.com | "DNS:crossdata.marathon.mesos,DNS:marathon-lb.marathon.mesos" | crossdata/$name/tls/x509-server-cert crossdata/$name/gosec-plugin/x509-auth/x509-client-cert
+metrics-kafka | "DNS:metrics1.labs.stratio.com,DNS:metrics1" | stratio-paas/metrics-kafka/tls/x509-server-cert
+telegraf | "DNS:master-1.labs.stratio.com,DNS:master-1,DNS:agent-2.labs.stratio.com,DNS:agent-2,DNS:agent-3.labs.stratio.com,DNS:agent-3" | stratio-paas/telegraf/x509-auth/x509-client-cert

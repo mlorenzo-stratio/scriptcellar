@@ -1,0 +1,18 @@
+#!/bin/bash
+
+TABLESPACE=$1
+
+. /home/oracle/.bash_FRONTprofile 2>/dev/null
+$ORACLE_HOME/bin/sqlplus -s system/v3ranit0by3 as sysdba << SQLSCRIPT
+set pagesize 0
+set heading off
+set feedback off
+
+select TSFREE, TAM_MAX, (TAM_ACT/TAM_MAX)*100 as PCT_USED from (
+                        select tablespace_name, TAM_MAX - TAM_ACT as TSFREE, TAM_ACT, TAM_MAX from (
+                                select tablespace_name, sum((bytes/1024)/1024) as TAM_ACT, sum((maxbytes/1024)/1024) as TAM_MAX
+                                from dba_data_files where tablespace_name not like 'UNDO%' and AUTOEXTENSIBLE='YES' group by tablespace_name)
+                        a where a.tablespace_name='$TABLESPACE') where tablespace_name='$TABLESPACE';
+
+exit;
+SQLSCRIPT

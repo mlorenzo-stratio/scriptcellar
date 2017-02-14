@@ -1,0 +1,108 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+service="jboss"
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME copy_war <app1...appN> [<server1...serverN>]
+	Copies specified app WARs to servers
+EOH
+}
+
+# returns true in case $server hosts a Tomcat instead of a JBoss
+isTomcat(){
+        if ssh -oStrictHostKeyChecking=no $server test -f /etc/init.d/tomcat; then
+                return 0
+        fi
+        return 1
+}
+
+_ssh(){
+        local server=$1
+        shift
+        local args=$*
+        $DEBUG ssh -oStrictHostKeyChecking=no $server $args 2>/dev/null
+}
+
+_ssh_output(){
+        local server=$1
+        shift
+        local args=$*
+        $DEBUG ssh -oStrictHostKeyChecking=no $server $args 2>/dev/null > $_output
+}
+
+### Copy & Deploy functions
+copy_war(){ # copy WAR to app servers
+        local app=$1
+        shift
+        local servers=$*
+        local output
+        local count=0
+
+        # if server_name isn't set, all servers were selected
+        servers=${servers:-"$(getServer $app 'application')"}
+
+	# Calculate TOTAL
+        local TOTAL=$(getServer $app 'application' | wc -l)
+        if getServer $app 'application' | grep -q "$HOSTNAME" && [ "$TOTAL" -gt 1 ]; then
+                let TOTAL=TOTAL-1
+        fi
+
+        # Copy WAR to every server
+	log "copy_war: Copying \`$app\` WAR to $servers"
+        for server in $servers; do
+		print_percent
+		local _output=$(mktemp -p /dev/shm/rumboctl)
+                # avoid copying war to self hostname
+                if [ "$server" != "$HOSTNAME" ]; then
+			if isTomcat; then service="tomcat" ; fi
+			log -n "copy_war: copying \`$app\` to $server... "
+                        _ssh_output $server BATCH=$BATCH sudo /sbin/service $service get-war
+			local STATUS=$?
+			export STATUS
+			local output=$(cat $_output | tr -t '\n' '#')
+			rm -f $_output
+                        if [ $STATUS = 0 ]; then
+                                output="$app.war copied to $server"
+				log -a "OK"
+			else
+				output="ERROR: (exit $STATUS) $output"
+				log -a "ERROR!!"
+				log "output: $output"
+                        fi
+                        let count=count+1
+			print_comment
+                        echo -e $output | tee -a $TMP
+			print_comment
+			print_percent
+			
+                else
+                        output="WARNING! Not copying on current hostname $HOSTNAME"
+			print_comment
+                        echo -e $output | tee -a $TMP
+			print_comment
+                        continue
+                fi
+        done
+	echo >> $TMP
+	return $STATUS
+}
+
+check_arg 1 "" $* || exit $?
+retrieve_configuration
+getAppsServers $*
+echo apps=$apps, servers=$servers
+for app in $apps; do
+	lock $app
+	copy_war $app $servers
+	STATUS=$?
+	unlock $app
+done
+if [ $STATUS != 0 ]; then
+	exit $COPY_WAR_ERROR
+fi

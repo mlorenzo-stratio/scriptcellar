@@ -1,0 +1,144 @@
+#!/bin/bash
+
+SCRIPTNAME=$(basename $0)
+MYDIR=$(dirname $0)
+source $MYDIR/variables
+source $MYDIR/functions
+load_func_vars
+service="jboss"
+
+usage(){
+	cat << EOH
+Usage:	$SCRIPTNAME deploy_war <app> [server1...serverN]
+	Deploy app WAR on specified servers
+EOH
+}
+
+# returns true in case $server hosts a Tomcat instead of a JBoss
+isTomcat(){
+	if ssh -oStrictHostKeyChecking=no $server test -f /etc/init.d/tomcat; then
+		return 0
+	fi
+	return 1
+}
+
+_ssh(){
+	local server=$1
+	shift
+	local args=$*
+	$DEBUG ssh -oStrictHostKeyChecking=no $server $args 2>/dev/null
+}
+
+_ssh_output(){
+	local server=$1
+	shift
+	local args=$*
+	$DEBUG ssh -oStrictHostKeyChecking=no $server $args 2>/dev/null > $_output
+}
+
+### Copy & Deploy functions
+deploy_war(){ # deploys $app's WAR on specified server/node(s)
+        local app=$1
+        shift
+        local args=$*
+        local PERCENT
+        if [ ! "$keep_output" ]; then rm -f $TMP ; fi
+        if [ -z "$args" ]; then
+                # Build server list
+                local TOTAL=$(getServer $app 'application' | wc -l)
+                local count=0
+                local output
+		log "Starting \`$app\` deploy on every server"
+                for server in $(getServer $app 'application'); do
+			print_percent
+                        local _output=$(mktemp -p /dev/shm/rumboctl)
+			nodes=$(getNodes $app 'application' $server | tr -t '\n' ' ')
+			if [ ! "$nodes" ]; then continue; fi
+			if isTomcat; then service="tomcat" ; fi
+                        #$DEBUG ssh $server BATCH=$BATCH /sbin/service $service $app $nodes
+			_ssh_output $server BATCH=$BATCH sudo /sbin/service $service deploy
+                        local STATUS=$?
+			log -n "deploying $app@$server... "
+                        local output=$(cat $_output | tr -t '\n' '#')
+                        rm -f $_output
+                        if [ $STATUS != 0 ]; then
+                                output="ERROR: (exit $STATUS) $output"
+				log -a "ERROR!!"
+				log "output: $output"
+				if [ "$BATCH" != "yes" -a "$isDialog" != "yes" ]; then
+                        		echo -e $output | tr -t '#' '\n' | tr -s '\n' | tee -a $TMP
+					unlock $app
+					exit $DEPLOY_ERROR
+				fi
+			else
+				log -a "OK"
+                        fi
+                        let count=count+1
+			print_comment
+                        echo -e $output | tr -t '#' '\n' | tr -s '\n' | tee -a $TMP
+			print_comment
+			print_percent
+                done
+		log "Finished \`$app\` deploy on every server"
+        else
+		log "Starting \`$app\` deploy on $args"
+                # arg may be server
+                for arg in $args; do
+                	local count=0
+               		local TOTAL=1
+                        # Operate on nodes running $app on $server
+                        if isAppServer $arg; then
+                                print_percent
+                                local server=$arg
+                                local _output=$(mktemp -p /dev/shm/rumboctl)
+				nodes=$(getNodes $app 'application' $server | tr -t '\n' ' ')
+				if [ ! "$nodes" ]; then continue; fi
+				if isTomcat; then service="tomcat" ; fi
+	                        #$DEBUG ssh  $server BATCH=$BATCH /sbin/service $service $app $nodes > $_output
+				_ssh_output $server BATCH=$BATCH sudo /sbin/service $service deploy
+                                local STATUS=$?
+				log -n "deploying $app@$server... "
+                        	let count=count+1
+                                local output=$(cat $_output | tr -t '\n' '#')
+                                rm -f $_output
+                                if [ $STATUS != 0 ]; then
+                                        output="ERROR: (exit $STATUS) $output"
+					log -a "ERROR!!"
+					log "output: $output"
+					if [ "$BATCH" != "yes" -a "$isDialog" != "yes" ]; then
+	                        		echo -e $output | tr -t '#' '\n' | tr -s '\n' | tee -a $TMP
+						unlock $app
+						exit $DEPLOY_ERROR
+					fi
+				else
+					log -a "OK"
+                                fi
+				print_comment
+                                echo -e $output | tr -t '#' '\n' | tr -s '\n' | tee -a $TMP
+				print_comment
+				print_percent
+                        fi
+                done
+		log "Finished \`$app\` deploy on $args"
+        fi
+	echo >> $TMP
+	#echo $STATUS > $TMP_STATUS
+        return $STATUS
+}
+
+check_arg 1 "" $* || exit $?
+app=$1
+shift
+retrieve_configuration
+if ! isApp $app; then
+	usage
+	exit $NON_EXISTANT_APP
+fi
+servers=$(check_servers $app $*)
+lock $app
+deploy_war $app $servers
+STATUS=$?
+unlock $app
+if [ $STATUS != 0 ]; then
+        exit $DEPLOY_ERROR
+fi

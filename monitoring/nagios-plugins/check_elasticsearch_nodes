@@ -1,0 +1,138 @@
+#!/bin/bash
+
+HOST=$(echo $1 | cut -d'.' -f1)
+PORT=9200
+TIMEOUT=5
+USER1="/usr/local/nagios/libexec"
+HOME=~nagios
+tmp=$(mktemp -p /dev/shm)
+STATUS=0
+MIN_MEMBERS=2
+OUTPUT=""
+DEBUG=0
+
+declare -A node_names
+node_names[madup07]="Hidrogeno"
+node_names[madup08]="Helio"
+node_names[madup09]="Litio"
+node_names[madup17]="Berilio"
+
+declare -A nodes
+nodes[Hidrogeno]="madup07"
+nodes[Helio]="madup08"
+nodes[Litio]="madup09"
+nodes[Berilio]="madup17"
+
+if [ $# != 1 ]; then
+	echo "Usage: $0 <madup07|madup08|madup09|madup17>"
+	exit 1
+fi
+
+# Get master node by asking every node about the cluster:
+declare -A master votes
+votes[madup07]=0
+votes[madup08]=0
+votes[madup09]=0
+votes[madup17]=0
+votes[madup63]=0
+votes[madup64]=0
+
+function debug(){
+	LEVEL=$1
+	shift
+	if [ -n "$DEBUG" -a "$DEBUG" != 0 -a "$DEBUG" -ge $LEVEL ]; then
+		echo "$*"
+	fi
+}
+
+function getMaster(){
+	count=0
+	MSG=""
+	debug 1 "Looking for master... "
+	for node in "${!node_names[@]}"; do
+		# Get cluster master
+		URL="_cluster/state?pretty=true"
+		lynx -connect_timeout=$TIMEOUT -dump http://$node:$PORT/$URL > $tmp 2>&1
+		if [ $? = 0 ] && grep -q "master_node" $tmp; then
+			MASTER_ID=$(grep "master_node" $tmp | cut -d '"' -f4)
+			MASTER=$(grep -E "^    \"$MASTER_ID\"" -A1 $tmp | tail -1 | cut -d '"' -f4)
+			master[$node]=${nodes[$MASTER]}
+			votes[${nodes[$MASTER]}]=$[ ${votes[${nodes[$MASTER]}]} + 1 ]
+			debug 2 "votes[${nodes[$MASTER]}]="${votes[${nodes[$MASTER]}]}
+		else
+			if [ -n $MSG ]; then
+				MSG="members down: $node"
+				STATUS=1
+			fi
+			MSG="$MSG, $node"
+			((count++))
+		fi
+	done
+	MASTER=""
+	count=0
+
+	# Look for the actual master node
+	for node in "${!node_names[@]}"; do
+		if [ -z "$MASTER" ]; then
+			MASTER=$node
+			continue
+		fi
+		if [ "${votes[$node]}" -gt "${votes[$MASTER]}" -a $node != $MASTER ]; then
+			MASTER="$node"
+		fi
+	done
+
+	# Check for split cluster
+	for node in "${!node_names[@]}"; do
+		if [ "${votes[$node]}" -eq "${votes[$MASTER]}" -a $node != $MASTER ]; then
+			debug 1 "Split cluster: $node, $MASTER"
+			MSG="Split cluster detected!! Two master nodes: $node and $MASTER; $MSG"
+			OUTPUT="$MSG"
+			STATUS=2
+			# Return 1 as we didn't find master
+			return 1
+		fi
+	done
+	debug 1 "MASTER=$MASTER"
+
+	# If there are less than MIN_MEMBERS status code must be critical!
+	if [ $count -gt $MIN_MEMBERS ]; then
+		MSG="Cluster has only one member - $MSG"
+		STATUS=2
+	elif [ $count -eq $MIN_MEMBERS ]; then
+		MSG="Cluster degraded at minimum members - $MSG"
+		STATUS=1
+	elif [ -n "$MSG" ]; then
+		MSG="Cluster $MSG"
+		STATUS=1
+	fi
+
+	# Master found
+	return 0
+}
+
+function checkNode(){
+	# Ask the master for the current node status
+	URL="_cluster/nodes/${node_names[$HOST]}?pretty=true"
+	lynx -connect_timeout=$TIMEOUT -dump http://$MASTER:$PORT/$URL > $tmp 2>&1
+	# If can't connect or $node isn't found in cluster
+	if [ $? = 1 ] || ! grep -Eq "\"name\" : \"${node_names[$HOST]}\"" $tmp; then
+		OUTPUT="Master is $MASTER. Node $HOST NOT in cluster!! $MSG"
+		STATUS=2
+	elif [ -n "$MSG" ]; then
+		OUTPUT="Master is $MASTER. Node $HOST is OK. $MSG:"
+		STATUS=0
+	else
+		OUTPUT="Master is $MASTER. Node $HOST is OK"
+		STATUS=0
+	fi
+}
+
+### MAIN ###
+if getMaster ; then
+	checkNode
+fi
+
+echo $OUTPUT
+rm -fr $tmp
+exit $STATUS

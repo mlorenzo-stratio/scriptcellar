@@ -1,0 +1,462 @@
+#!/bin/bash
+
+############################################################### <FUNCTIONS> #################################################################
+function mockOutput(){
+  local target=$1
+  if [[ $target == "lun" ]]; then
+    cat << EOM | tr -d '"'
+"Performance Monitor Statistics for Storage Array: Acero - Date/Time: 2/9/17 4:06:44 PM - Polling interval in seconds: 5"
+
+
+"Objects","Total IOs","Read %","Primary Read Cache Hit %","Primary Write Cache Hit %","SSD Read Cache Hit %","Current MBs/sec","Maximum MBs/sec","Current IOs/sec","Maximum IOs/sec","Minimum IOs/sec","Average IOs/sec","Minimum MBs/sec","Average MBs/sec","Current IO Latency","Maximum IO Latency","Minimum IO Latency","Average IO Latency"
+
+"Capture Iteration: 1","","","","","","","","","","","","","","","","",""
+"Date/Time: 2/9/17 4:06:45 PM","","","","","","","","","","","","","","","","",""
+"Virtual Disk DataStore_Data_I","143.0","49.7","71.8","100.0","0.0","1.4","1.4","28.0","28.0","28.0","28.0","1.4","1.4","0.8","0.8","0.8","0.8"
+"Virtual Disk DataStore_Data_II","227.0","9.7","27.3","100.0","0.0","0.6","0.6","45.0","45.0","45.0","45.0","0.6","0.6","1.1","1.1","1.1","1.1"
+"Virtual Disk DataStore_Data_III","51.0","39.2","10.0","100.0","0.0","0.0","0.0","10.0","10.0","10.0","10.0","0.0","0.0","0.6","0.6","0.6","0.6"
+"Virtual Disk DataStore_Data_IV","76.0","31.6","4.2","100.0","0.0","0.2","0.2","15.0","15.0","15.0","15.0","0.2","0.2","12.0","12.0","12.0","12.0"
+"Virtual Disk DataStore_Data_IX","48.0","43.8","14.3","100.0","0.0","0.0","0.0","9.0","9.0","9.0","9.0","0.0","0.0","0.4","0.4","0.4","0.4"
+"Virtual Disk DataStore_Data_V","105.0","27.6","13.8","100.0","0.0","0.1","0.1","21.0","21.0","21.0","21.0","0.1","0.1","1.9","1.9","1.9","1.9"
+"Virtual Disk DataStore_Data_VI","70.0","71.4","66.0","100.0","0.0","0.8","0.8","14.0","14.0","14.0","14.0","0.8","0.8","11.9","11.9","11.9","11.9"
+"Virtual Disk DataStore_Data_VII","457.0","9.8","8.9","100.0","0.0","0.7","0.7","91.0","91.0","91.0","91.0","0.7","0.7","3.3","3.3","3.3","3.3"
+"Virtual Disk DataStore_Data_VIII","70.0","31.4","9.1","100.0","0.0","0.1","0.1","14.0","14.0","14.0","14.0","0.1","0.1","16.0","16.0","16.0","16.0"
+"Virtual Disk DataStore_Data_X","2642.0","1.1","6.7","100.0","0.0","72.9","72.9","528.0","528.0","528.0","528.0","72.9","72.9","6.4","6.4","6.4","6.4"
+"Virtual Disk DataStore_Data_XI","36.0","50.0","11.1","100.0","0.0","0.0","0.0","7.0","7.0","7.0","7.0","0.0","0.0","0.5","0.5","0.5","0.5"
+"Virtual Disk DataStore_Data_XII","359.0","16.4","3.4","100.0","0.0","0.7","0.7","71.0","71.0","71.0","71.0","0.7","0.7","15.3","15.3","15.3","15.3"
+"Virtual Disk DataStore_Data_XIII","357.0","26.3","0.0","100.0","0.0","0.7","0.7","71.0","71.0","71.0","71.0","0.7","0.7","7.2","7.2","7.2","7.2"
+"Virtual Disk DataStore_Data_XIV","183.0","16.9","19.4","100.0","0.0","0.6","0.6","36.0","36.0","36.0","36.0","0.6","0.6","10.4","10.4","10.4","10.4"
+"Virtual Disk DataStore_Data_XV","77.0","26.0","10.0","100.0","0.0","0.0","0.0","15.0","15.0","15.0","15.0","0.0","0.0","0.4","0.4","0.4","0.4"
+"Virtual Disk DataStore_Data_XVI","280.0","31.1","36.8","100.0","0.0","1.3","1.3","56.0","56.0","56.0","56.0","1.3","1.3","15.7","15.7","15.7","15.7"
+"Virtual Disk DataStore_Data_XVII","91.0","75.8","20.3","100.0","0.0","1.1","1.1","18.0","18.0","18.0","18.0","1.1","1.1","14.3","14.3","14.3","14.3"
+"Virtual Disk DataStore_Data_XVIII","174.0","13.8","12.5","100.0","0.0","0.4","0.4","34.0","34.0","34.0","34.0","0.4","0.4","8.8","8.8","8.8","8.8"
+"Virtual Disk DataStore_System_I","450.0","9.1","0.0","100.0","0.0","2.4","2.4","90.0","90.0","90.0","90.0","2.4","2.4","4.5","4.5","4.5","4.5"
+"Virtual Disk DataStore_System_II","4369.0","12.5","17.0","100.0","0.0","15.0","15.0","873.0","873.0","873.0","873.0","15.0","15.0","1.9","1.9","1.9","1.9"
+EOM
+  elif [[ $target == "disk" ]]; then
+    cat << EOM | tr -d '"'
+"Performance Monitor Statistics for Storage Array: Acero - Date/Time: 2/10/17 12:17:39 PM - Polling interval in seconds: 5"
+
+
+"Objects","Current IO Latency","Maximum IO Latency","Minimum IO Latency","Average IO Latency"
+
+"Capture Iteration: 1","","","",""
+"Date/Time: 2/10/17 12:17:39 PM","","","",""
+"Expansion Enclosure 0, Drawer 0, Slot 0","23.0","23.0","23.0","23.0"
+"Expansion Enclosure 0, Drawer 0, Slot 1","17.5","17.5","17.5","17.5"
+"Expansion Enclosure 0, Drawer 0, Slot 3","27.1","27.1","27.1","27.1"
+"Expansion Enclosure 0, Drawer 0, Slot 4","18.4","18.4","18.4","18.4"
+"Expansion Enclosure 0, Drawer 0, Slot 6","20.3","20.3","20.3","20.3"
+"Expansion Enclosure 0, Drawer 0, Slot 7","23.6","23.6","23.6","23.6"
+"Expansion Enclosure 0, Drawer 0, Slot 9","23.4","23.4","23.4","23.4"
+"Expansion Enclosure 0, Drawer 0, Slot 10","25.6","25.6","25.6","25.6"
+"Expansion Enclosure 0, Drawer 1, Slot 0","16.4","16.4","16.4","16.4"
+"Expansion Enclosure 0, Drawer 1, Slot 1","22.8","22.8","22.8","22.8"
+"Expansion Enclosure 0, Drawer 1, Slot 3","21.8","21.8","21.8","21.8"
+"Expansion Enclosure 0, Drawer 1, Slot 6","24.9","24.9","24.9","24.9"
+"Expansion Enclosure 0, Drawer 1, Slot 9","0.0","0.0","0.0","0.0"
+"Expansion Enclosure 0, Drawer 2, Slot 0","0.0","0.0","0.0","0.0"
+"Expansion Enclosure 0, Drawer 2, Slot 1","16.4","16.4","16.4","16.4"
+"Expansion Enclosure 0, Drawer 2, Slot 3","19.3","19.3","19.3","19.3"
+"Expansion Enclosure 0, Drawer 2, Slot 4","16.8","16.8","16.8","16.8"
+"Expansion Enclosure 0, Drawer 2, Slot 6","19.9","19.9","19.9","19.9"
+"Expansion Enclosure 0, Drawer 2, Slot 7","19.7","19.7","19.7","19.7"
+"Expansion Enclosure 0, Drawer 2, Slot 9","18.4","18.4","18.4","18.4"
+"Expansion Enclosure 0, Drawer 2, Slot 10","21.7","21.7","21.7","21.7"
+"Expansion Enclosure 0, Drawer 3, Slot 0","22.6","22.6","22.6","22.6"
+"Expansion Enclosure 0, Drawer 3, Slot 1","16.9","16.9","16.9","16.9"
+"Expansion Enclosure 0, Drawer 3, Slot 3","15.6","15.6","15.6","15.6"
+"Expansion Enclosure 0, Drawer 3, Slot 4","29.7","29.7","29.7","29.7"
+"Expansion Enclosure 0, Drawer 3, Slot 6","15.7","15.7","15.7","15.7"
+"Expansion Enclosure 0, Drawer 3, Slot 7","17.4","17.4","17.4","17.4"
+"Expansion Enclosure 0, Drawer 3, Slot 9","14.3","14.3","14.3","14.3"
+"Expansion Enclosure 0, Drawer 3, Slot 10","17.5","17.5","17.5","17.5"
+"Expansion Enclosure 0, Drawer 4, Slot 0","20.0","20.0","20.0","20.0"
+"Expansion Enclosure 0, Drawer 4, Slot 1","15.6","15.6","15.6","15.6"
+"Expansion Enclosure 0, Drawer 4, Slot 3","17.5","17.5","17.5","17.5"
+"Expansion Enclosure 0, Drawer 4, Slot 4","20.2","20.2","20.2","20.2"
+"Expansion Enclosure 0, Drawer 4, Slot 6","20.9","20.9","20.9","20.9"
+"Expansion Enclosure 0, Drawer 4, Slot 7","17.9","17.9","17.9","17.9"
+"Expansion Enclosure 0, Drawer 4, Slot 9","19.0","19.0","19.0","19.0"
+EOM
+  elif [[ $target == "disk_status" ]]; then
+    cat << EOM
+SUMMARY
+   Number of physical disks: 36
+      Current media type(s): Physical Disk (36)
+      Current interface type(s): Serial Attached SCSI (SAS) (36)
+
+   BASIC:
+
+      ENCLOSURE, DRAWER, SLOT  STATUS   CAPACITY      MEDIA TYPE     INTERFACE TYPE  CURRENT DATA RATE  PRODUCT ID        FIRMWARE VERSION  CAPABILITIES
+      0,         0,      0     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         0,      1     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         0,      3     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         0,      4     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         0,      6     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         0,      7     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         0,      9     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         0,      10    Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         1,      0     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         1,      1     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         1,      3     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         1,      6     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         1,      9     Optimal  838.363 GB    Physical Disk  SAS             6 Gbps             ST900MM0006       LS0B
+      0,         2,      0     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         2,      1     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         2,      3     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         2,      4     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         2,      6     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         2,      7     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         2,      9     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         2,      10    Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      0     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      1     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      3     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      4     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      6     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      7     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      9     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         3,      10    Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         4,      0     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         4,      1     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         4,      3     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         4,      4     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         4,      6     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         4,      7     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+      0,         4,      9     Optimal  3,726.023 GB  Physical Disk  SAS             6 Gbps             ST4000NM0023      GS10
+
+   DRIVE CHANNELS (RAID Controller Module 0):
+
+      ENCLOSURE, DRAWER, SLOT  PREFERRED CHANNEL  REDUNDANT CHANNEL
+      0,         0,      0     1                  2
+      0,         0,      1     2                  1
+      0,         0,      3     2                  1
+      0,         0,      4     1                  2
+      0,         0,      6     1                  2
+      0,         0,      7     2                  1
+      0,         0,      9     2                  1
+      0,         0,      10    1                  2
+      0,         1,      0     1                  2
+      0,         1,      1     2                  1
+      0,         1,      3     2                  1
+      0,         1,      6     1                  2
+      0,         1,      9     2                  1
+      0,         2,      0     1                  2
+      0,         2,      1     2                  1
+      0,         2,      3     2                  1
+      0,         2,      4     1                  2
+      0,         2,      6     1                  2
+      0,         2,      7     2                  1
+      0,         2,      9     2                  1
+      0,         2,      10    1                  2
+      0,         3,      0     1                  2
+      0,         3,      1     2                  1
+      0,         3,      3     2                  1
+      0,         3,      4     1                  2
+      0,         3,      6     1                  2
+      0,         3,      7     2                  1
+      0,         3,      9     2                  1
+      0,         3,      10    1                  2
+      0,         4,      0     1                  2
+      0,         4,      1     2                  1
+      0,         4,      3     2                  1
+      0,         4,      4     1                  2
+      0,         4,      6     1                  2
+      0,         4,      7     2                  1
+      0,         4,      9     2                  1
+
+Any
+EOM
+  fi
+}
+
+
+function usage(){
+  cat << EOU
+Usage: "$0" -t lun -m speed -s <controller_1_address> [-s controller_2_address] [-n disk_name|lun_name]
+       "$0" -t lun -m latency -s <controller_1_address> [-s controller_2_address] [-n disk_name|lun_name] [-w warn_threshold -c crit_threshold]
+       "$0" -t disk -s <controller_1_address> [-s controller_2_address] [-w warn_threshold -c crit_threshold]
+EOU
+}
+
+function getMD3000Stats(){
+  local target=$1
+  local tmp
+  tmp=$(mktemp -p /dev/shm .getMD3000Stats.XXXX)
+  if [[ $DEVEL == "true" ]]; then
+    if [[ $target == "lun" ]]; then
+      mockOutput lun > "$tmp"
+      if [[ $(grep -c "^Virtual Disk DataStore_.*${name}," "$tmp") != 1 ]]; then
+        rm -f "$name_found"
+        grep "^Virtual Disk DataStore_.*${name}" "$tmp"
+      else
+        grep "^Virtual Disk DataStore_.*${name}," "$tmp"
+      fi
+    elif [[ $target == "disk" ]]; then
+      mockOutput disk | grep "Expansion Enclosure"
+    elif [[ $target == "disk_status" ]]; then
+      mockOutput disk_status | tr -s ' ' | grep "Physical Disk SAS"
+    fi
+  elif [[ $target == "disk" ]]; then
+    $CMD 'show allphysicaldisks performancestats;' | tr -d '"' | grep "Expansion Enclosure"
+  elif [[ $target == "lun" ]]; then
+    $CMD 'show allvirtualdisks performancestats;' | tr -d '"' > "$tmp"
+    if [[ $(grep -c "^Virtual Disk DataStore_.*${name}," "$tmp") != 1 ]]; then
+      rm -f "$name_found"
+      grep "^Virtual Disk DataStore_.*${name}" "$tmp"
+    else
+      grep "^Virtual Disk DataStore_.*${name}," "$tmp"
+    fi
+  elif [[ $target == "disk_status" ]]; then
+    ## Get physical disks status
+    $CMD 'show allphysicaldisks summary;' | tr -s ' ' | grep "Physical Disk SAS"
+  fi
+  rm -f "$tmp"
+}
+
+
+function getStats(){
+  local target=$1
+  if [[ $target == "disk" ]]; then
+    getDiskStats
+  elif [[ $target == "lun" ]]; then
+    getLunStats
+  else
+    echo "$target is not a valid option"
+    usage
+    exit 10
+  fi
+}
+
+function getLunStats(){
+  local perfdata all_disks_mb_sec all_disks_avg_latency num_disks io_lat mb_sec
+  all_disks_mb_sec=0
+  all_disks_avg_latency=0
+  num_disks=0
+  while IFS=$'\n," ' read null1 null2 disk \
+                          total_io \
+                          read_pct \
+                          pri_read_cache_hit_pct \
+                          pri_write_cache_hit_pct \
+                          SSD_read_cache_hit \
+                          curr_mb_sec \
+                          max_mb_sec \
+                          curr_io_sec \
+                          max_io_sec \
+                          min_io_sec \
+                          avg_io_sec \
+                          min_mb_sec \
+                          avg_mb_sec \
+                          curr_io_lat \
+                          max_io_lat \
+                          min_io_lat \
+                          avg_io_lat; do
+    disk_name=$(echo "$disk" | cut -d ' ' -f3-)
+    if [[ -z $name ]]; then
+      all_disks_mb_sec=$(echo $all_disks_mb_sec + "$curr_mb_sec" | bc)
+      all_disks_avg_latency=$(echo $all_disks_avg_latency + "$curr_io_lat" | bc)
+      let num_disks+=1
+    fi
+    if [[ $mode = "speed" ]]; then
+      mb_sec=$curr_mb_sec
+      if [[ $warn_threshold ]]; then
+        perfdata+="${disk_name}_mb_sec=${curr_mb_sec}MB/s;$warn_threshold;$crit_threshold;; "
+      else
+        perfdata+="${disk_name}_mb_sec=${curr_mb_sec}MB/s "
+      fi
+    elif [[ $mode = "latency" ]]; then
+      if [[ $crit_threshold ]] && compare "$curr_io_lat > $crit_threshold"; then
+        [[ $exit_status -le $CRITICAL ]] && exit_status=$CRITICAL
+        perf_crit+="$disk_name, "
+      elif [[ $warn_threshold ]] && compare "$curr_io_lat > $warn_threshold"; then
+        [[ $exit_status -le $WARNING ]] && exit_status=$WARNING
+        perf_warn+="$disk_name, "
+      fi
+      io_lat=$curr_io_lat
+      if [[ $warn_threshold ]]; then
+        perfdata+="${disk_name}_io_lat=${curr_io_lat}ms;$warn_threshold;$crit_threshold;; "
+      else
+        perfdata+="${disk_name}_io_lat=${curr_io_lat}ms "
+      fi
+    else
+      usage
+      exit 1
+    fi
+    #echo DEBUG: $null1 $null2 $disk
+    #exit
+  done< <(getMD3000Stats "$target")
+  if [[ -n $name ]]; then
+    if [[ -e $name_found ]]; then
+      echo -n "LUN $name - "
+    else
+      echo -n "LUN regex:/$name/ - "
+    fi
+    if [[ $mode = "speed" ]]; then
+      echo -en "Current MB/sec: ${mb_sec} MB/s | $perfdata"
+    elif [[ $mode = "latency" ]]; then
+      # Build performance message
+      if [[ $perf_crit ]]; then
+        perf_msg+="CRITICAL(>${crit_threshold}ms): ${perf_crit%%, }, "
+      fi
+      if [[ $perf_warn ]]; then
+        perf_msg+="WARNING(>${warn_threshold}ms): ${perf_warn%%, }, "
+      fi
+      echo -en "Current IO latency: ${io_lat} ms | $perfdata"
+    fi
+  else
+    if [[ $mode = "speed" ]]; then
+      echo -n "All LUNs - aggregated speed $all_disks_mb_sec MB/sec | $perfdata"
+    elif [[ $mode = "latency" ]]; then
+      all_disks_avg_latency=$(echo "scale=2;$all_disks_avg_latency" / $num_disks | bc)
+
+      # Build performance message
+      if [[ $perf_crit ]]; then
+        perf_msg+="CRITICAL(>${crit_threshold}ms): ${perf_crit%%, }, "
+      fi
+      if [[ $perf_warn ]]; then
+        perf_msg+="WARNING(>${warn_threshold}ms): ${perf_warn%%, }, "
+      fi
+
+      if [[ $exit_status != 0 ]]; then
+        echo "${perf_msg%%, } - average latency ${all_disks_avg_latency}ms | $perfdata"
+      else
+        echo -n "All LUNs OK - average latency $all_disks_avg_latency ms | $perfdata"
+      fi
+    fi
+  fi
+}
+
+function compare(){
+  local cmp=$*
+  #echo -n "$cmp: "
+  if [[ $(echo "$cmp" | bc) == 1 ]]; then
+    #echo yes
+    return 0
+  else
+    #echo no
+    return 1
+  fi
+}
+
+function getDiskStats(){
+  local disks_failed perf_msg perf_warn perf_crit perfdata curr_io_lat max_io_lat min_io_lat avg_io_lat
+  all_disks_avg_latency=0
+  num_disks=0
+  while IFS=$'\n," ' read null1 null2 enclosure \
+                          null3 drawer \
+                          null4 slot \
+                          curr_io_lat \
+                          max_io_lat \
+                          min_io_lat \
+                          avg_io_lat; do
+    #echo DEBUG: $null1 $null2 $enclosure $null3 $drawer $null4 $slot
+    #exit
+    disk_name="disk_${enclosure}_${drawer}_${slot}"
+    all_disks_avg_latency=$(echo $all_disks_avg_latency + "$curr_io_lat" | bc)
+    let num_disks+=1
+    if [[ $crit_threshold ]] && compare "$curr_io_lat > $crit_threshold"; then
+      exit_status=$CRITICAL
+      perf_crit+="$disk_name, "
+    elif [[ $warn_threshold ]] && compare "$curr_io_lat > $warn_threshold"; then
+      exit_status=$WARNING
+      perf_warn+="$disk_name, "
+    fi
+    if [[ $warn_threshold ]]; then
+      perfdata+="${disk_name}_io_lat=${curr_io_lat}ms;$warn_threshold;$crit_threshold;; "
+    else
+      perfdata+="${disk_name}_io_lat=${curr_io_lat}ms "
+    fi
+  done< <(getMD3000Stats "disk")
+
+  # Calculate average latency
+  all_disks_avg_latency=$(echo "scale=2;$all_disks_avg_latency" / $num_disks | bc)
+
+  # Build performance message
+  if [[ $perf_crit ]]; then
+    perf_msg+="CRITICAL(>${crit_threshold}ms): ${perf_crit%%, }, "
+  fi
+  if [[ $perf_warn ]]; then
+    perf_msg+="WARNING(>${warn_threshold}ms): ${perf_warn%%, }, "
+  fi
+
+  while IFS=$', ' read enclosure drawer slot status rest; do
+    if [[ $status != "Optimal" ]]; then
+      disks_failed+="$disk_name, "
+    fi
+  done< <(getMD3000Stats "disk_status")
+  if [[ $disks_failed ]]; then
+    if [[ $perf_msg ]]; then
+      echo "Failed disks: ${disks_failed%%, } (disk_x_y_z: Enclosure: x, Drawer:_ y, Slot: z); ${perf_msg%%, } - average latency ${all_disks_avg_latency}ms | $perfdata"
+    else
+      echo "Failed disks: ${disks_failed%%, } (disk_x_y_z: Enclosure: x, Drawer:_ y, Slot: z) - average latency ${all_disks_avg_latency}ms | $perfdata"
+    fi
+    exit_status=$CRITICAL
+  elif [[ $exit_status != 0 ]]; then
+    echo "${perf_msg%%, } - average latency ${all_disks_avg_latency}ms | $perfdata"
+  else
+    echo "All Disks OK - average latency ${all_disks_avg_latency}ms | $perfdata"
+  fi
+}
+
+# Remove global temp files upon exit
+function cleanup(){
+  rm -f "$name_found"
+}
+trap cleanup 0 # cleanup before exiting
+############################################################### </FUNCTIONS> #################################################################
+
+
+# Script config
+#DEVEL=true
+CMD_PATH="/opt/dell/mdstoragesoftware/mdstoragemanager/client"
+
+# Global variables
+declare OK=0
+declare WARNING=1
+declare CRITICAL=2
+declare UNKNOWN=3
+declare mode
+declare ctrlr
+declare disk
+declare warn_threshold
+declare crit_threshold
+declare name_found
+declare exit_status
+exit_status=$OK
+name_found=$(mktemp -p /dev/shm name_found.XXXX)
+
+function main(){
+  while getopts "t:m:s:n:w:c:h" opt; do
+    case $opt in
+        t)   target=$OPTARG ;;         ### GLOBAL VARIABLES ###
+        m)   mode=$OPTARG ;;           ### GLOBAL VARIABLES ###
+        s)   ctrlr+="$OPTARG ";;       ### GLOBAL VARIABLES ###
+        n)   name=$OPTARG ;;           ### GLOBAL VARIABLES ###
+        w)   warn_threshold=$OPTARG ;; ### GLOBAL VARIABLES ###
+        c)   crit_threshold=$OPTARG ;; ### GLOBAL VARIABLES ###
+        h|*) usage ; exit 1; ;;
+    esac
+  done
+
+  CMD="$CMD_PATH/SMcli $ctrlr -S -c"
+  # Verify all needed parameters
+  if [[ -z $ctrlr ]] || \
+     [[ -z $target ]] || \
+     [[ $target == "lun" ]] && [[ -z $mode ]] || \
+     [[ $target == "disk" ]] && [[ -n $name ]] || \
+     [[ $mode == "speed" ]] && ( [[ $warn_threshold ]] || [[ $crit_threshold ]] ) || \
+     [[ $warn_threshold ]] && [[ ! $crit_threshold ]]; then
+    usage
+    exit 10
+  fi
+
+  if [[ $crit_threshold ]] && [[ $warn_threshold ]] && compare "$warn_threshold > $crit_threshold"; then
+    echo -e "ERROR!\nWarning threshold must be less than critical threshold"
+    exit 10
+  fi
+  getStats "$target"
+  exit $exit_status
+}
+
+main "$@"

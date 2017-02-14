@@ -1,0 +1,243 @@
+#!/bin/bash
+
+function help(){
+cat << EOM
+Usage: check_zookeeper [-H <host>] [-p <port>] -s <statistic>
+
+Statistics:
+    latency:            Min/Avg/Max latency
+    alive_conns:        Alive connections
+    requests:           Outstanding requests
+    received_packets:   Received Packets
+    sent_packets:       Sent Packets
+EOM
+}
+
+# Exit status variables
+UNKNOWN=3
+CRITICAL=2
+WARNING=1
+OK=0
+
+# Get options
+while getopts "H:p:s:w:c:h" option; do
+   case $option in
+      H)      HOST=$OPTARG ;;
+      p)      PORT=$OPTARG ;;
+      s)      STAT=$OPTARG ;;
+      w)      WARN=$OPTARG ;;
+      c)      CRIT=$OPTARG ;;
+      h|\?)   help ; exit 0 ;;
+      *)      help ; exit $UNKNOWN ;;
+   esac
+done
+
+# VARIABLES
+HOST=${HOST:-"0.0.0.0"}
+PORT=${PORT:-"2181"}
+NC=${NC:-"$(which nc)"}
+BC_CMD=${BC_CMD:-"$(which bc)"}
+MSGHEADER="Zookeeper"
+
+# THRESHOLD DATA, VARIABLES & MESSAGES
+declare -A DATA=(
+    # THRESHOLDS
+    ["latency_OK"]='<= 1500'
+    ["latency_WARN"]='> 1500'
+    ["latency_CRIT"]='>= 2000'
+
+    ["alive_conns_OK"]='> -1'
+    ["alive_conns_WARN"]='< -1'
+    ["alive_conns_CRIT"]='< -1'
+
+    ["requests_OK"]='> -1'
+    ["requests_WARN"]='< -1'
+    ["requests_CRIT"]='< -1'
+
+    ["received_packets_OK"]='> -1'
+    ["received_packets_WARN"]='< -1'
+    ["received_packets_CRIT"]='< -1'
+
+    ["sent_packets_OK"]='> -1'
+    ["sent_packets_WARN"]='< -1'
+    ["sent_packets_CRIT"]='< -1'
+
+    # STATISTICS & QUERIES
+    ["latency_STAT"]='zk_min_latency zk_avg_latency zk_max_latency' # Desired stats
+    ["latency_SHOW"]='zk_avg_latency'                               # Stat to show on output (not referring to perfdata)
+    ["latency_UNIT"]='ms'                                           # Stat unit
+
+    ["alive_conns_STAT"]='zk_num_alive_connections' # Desired stats
+
+    ["requests_STAT"]='zk_outstanding_requests' # Desired stats
+
+    ["received_packets_STAT"]='zk_packets_received' # Desired stats
+    ["received_packets_UNIT"]='c'                   # Stat unit (cumulative value)
+
+    ["sent_packets_STAT"]='zk_packets_sent'     # Desired stats
+    ["sent_packets_UNIT"]='c'                   # Stat unit (cumulative value)
+)
+
+# Echo to STDERR
+function echo_err(){
+    local msg=$*
+    echo -e "$msg" >&2
+}
+
+# Function to capture syntax errors from bc
+function BC(){
+    local output
+    #if read -t 0; then
+        output=$(cat | $BC_CMD 2> "$stderr")
+    #else
+    #    exit $UNKNOWN
+    #fi
+    if grep -q "syntax error" "$stderr"; then
+        echo_err "bc: syntax error"
+        exit $UNKNOWN
+    fi
+    echo "$output"
+}
+
+# Function to compare values to thresholds
+function cmp(){
+    local args="$*"
+    if [ -z "$1" -o -z "$2" ]; then
+        echo "$MSGHEADER Unknown error!!"
+        exit "$UNKNOWN"
+    fi
+    # Discard float numbers with a definition of exponent above -10
+    if [[ "$1" =~ ^.*E-[1-9]{1}[0-9]{1}[0-9]*$ ]]; then
+        args="0 $2"
+    fi
+    exit_value="$(echo "$args" | BC)"
+    if [ "$exit_value" = 1 ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+# Clean temp files upon exit
+function cleanup(){
+    rm -f "$tmp" "$stderr" # Remove temp files
+}
+trap cleanup 0
+
+# Define trap function to execute a method upon error on failure and exit
+function error(){
+    local parent_lineno="$1"
+    local message="$2"
+    local code="${3:-$UNKNOWN}"
+    local funcname="${4}"
+    if [ ! -z "$funcname" ]; then
+        funcname="on function $funcname or "
+    fi
+    if [[ -n "$message" ]] ; then
+        echo "Error ${funcname}near line ${parent_lineno}: ${message}; exiting with status ${code}"
+    else
+        echo "Error ${funcname}near line ${parent_lineno}; exiting with status ${code}"
+    fi
+    exit "${code}"
+}
+trap 'error ${LINENO} ${FUNCNAME}' ERR
+
+############################ MAIN START ############################
+
+if ! (echo > /dev/tcp/"$HOST"/"$PORT") >/dev/null 2>&1; then
+    echo "$MSGHEADER $HOST:$PORT is down!"
+    exit $CRITICAL
+fi
+
+if [ ! -x "$NC" ]; then
+    echo "\`nc\` command is missing. Plugin needs \`nc\` package to work."
+    exit $UNKNOWN
+fi
+
+if [ -z "$STAT" ]; then
+    echo "Statistic is mandatory"
+    help
+    exit $UNKNOWN
+fi
+
+case $STAT in
+    latency|alive_conns|requests|received_packets|sent_packets)
+        stats=${DATA[${STAT}_STAT]}
+        showStat=${DATA[${STAT}_SHOW]}
+        unit=${DATA[${STAT}_UNIT]}
+        THRESHOLD_OK=${DATA[${STAT}_OK]}
+        THRESHOLD_WARN=${DATA[${STAT}_WARN]}
+        THRESHOLD_CRIT=${DATA[${STAT}_CRIT]}
+    ;;
+    *)
+        help ; exit $UNKNOWN
+    ;;
+esac
+showStat=${showStat:-"$stats"}
+
+# Override default warning & critical threshold values
+if [ "$WARN" ]; then
+    THRESHOLD_WARN="$(echo $THRESHOLD_WARN | cut -d ' ' -f1) $WARN"
+fi
+if [ "$CRIT" ]; then
+    THRESHOLD_CRIT="$(echo $THRESHOLD_CRIT | cut -d ' ' -f1) $CRIT"
+fi
+
+tmp=$(mktemp -p /dev/shm)
+stderr=$(mktemp -p /dev/shm)
+# Query the Zookeeper variables
+echo "mntr" | nc "$HOST" "$PORT" 2>/dev/null > "$tmp"
+if [ $? != 0 ]; then
+    echo "$MSGHEADER UNKNOWN ERROR!"
+    exit $UNKNOWN
+fi
+
+# Manage output in case ZooKeeper is just starting
+if grep -qE "^This ZooKeeper instance is not currently serving requests$" "$tmp"; then
+    echo "$MSGHEADER ZooKeeper is starting..."
+    exit $UNKNOWN
+fi
+
+# Select the specified variables
+while IFS=$'\t' read key value ; do
+    # Get server mode 
+    if [[ "$key" =~ ^zk_server_state$ ]]; then
+        STATE="$value"
+    fi
+    # Get the stat to be shown on the message part
+    if [[ "$key" =~ ^$showStat$ ]]; then
+        realkey=${key#zk_} # strip away zk_ prefix
+        statOutput="$realkey: $value"
+        statValue="$value"
+    fi
+    for stat in $stats; do
+        if [[ "$key" =~ ^$stat$ ]]; then
+            realkey=${key#zk_} # strip away zk_ prefix
+            output="$output $realkey=$value$unit;"
+        fi
+    done
+done < "$tmp"
+
+# Fill $exit_status according to values and thresholds
+if cmp "$statValue" "$THRESHOLD_CRIT";then
+    message="is CRITICAL"
+    exit_status=$CRITICAL
+elif cmp "$statValue" "$THRESHOLD_WARN"; then
+    message="is WARNING"
+    exit_status=$WARNING
+elif cmp "$statValue" "$THRESHOLD_OK"; then
+    message="is OK"
+    exit_status=$OK
+fi
+
+if [ ! -z "$output" ]; then
+    output=" | $output"
+fi
+
+# Print service information and performance data
+echo -n "$MSGHEADER ($STATE) $message $statOutput"
+echo -e "$output"
+
+# Exit and return a value according to defined thresholds
+exit $exit_status
+

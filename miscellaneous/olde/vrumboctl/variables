@@ -1,0 +1,100 @@
+#!/bin/bash
+
+# OUTPUT ERROR CODES
+MISSING_ARGS=2
+NON_EXISTANT_NODE=3
+NON_EXISTANT_SERVER=4
+NON_EXISTANT_APP=5
+GRACEFUL_DEPLOY_ERROR=6
+LOCKED_APPLICATION=7
+DEPLOY_ERROR=8
+GRACEFUL_RESTART_ERROR=9
+INVALID_ARGUMENT=10
+UNKNOWN_ERROR=11
+COPY_WAR_ERROR=12
+APP_NOT_DEPLOYED=13
+APP_SERVER_NOT_RUNNING=14
+WRONG_SCRIPT_EXECUTION=100
+UNKNOWN_OPTION_SPECIFIED=101
+MISSING_REQUISITES=102
+
+# PATHS
+JBOSS_BASE_PATH="/rmb/jboss/current/server"
+TERRACOTTA_BASE_PATH="/rmb/terracotta"
+INFINISPAN_BASE_PATH="/rmb/infinispan/current"
+
+# LOCK DIR
+LOCK_DIR="/dev/shm/vrumboctl"
+mkdir -p $LOCK_DIR
+
+# MACHINE CATALOG
+VM_CATALOG_URL="http://cerberus.rumbo.com/vm_catalog"
+VM_CATALOG="$LOCK_DIR/vm_catalog"
+if [ ! -x "/usr/bin/lynx" ]; then
+	echo "Lynx not installed!! /usr/bin/lynx"
+	exit $MISSING_REQUISITES
+fi
+lynx -dump "$VM_CATALOG_URL" > $VM_CATALOG
+
+# REPORT MAILS
+LOGDIR="/home/rumbo/log/vrumboctl"
+mkdir -p $LOGDIR
+MAINLOG="/home/rumbo/log/vrumboctl.log"
+
+# CONNECTION VARIABLES & USERS
+_USER="rumbo"
+CONNECTION_JON_SERVER="madup0718"
+CONNECTION_MGMT_SERVER="madup0706"
+
+# CTL SCRIPTS
+JON_CTL="/home/rumbo/bin/jonctl"
+MAINT_CTL="/rmb/bin/mant_set.sh"
+
+# DISABLED SERVERS
+DISABLED_SERVERS="madus1001|madus1101|madus1102|madus9001"
+
+# SERVERS
+APPSERVERS_STG=($(grep ';STG APP' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+APPSERVERS_PRD=($(grep ';PRD APP' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+WEBSERVERS_STG=($(grep ';STG WEB' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+WEBSERVERS_PRD=($(grep ';PRD WEB' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+INFINISPANSERVERS_STG=($(grep ';STG infinispan' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+INFINISPANSERVERS_PRD=($(grep ';PRD infinispan' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+REDISSERVERS_STG=($(grep ';STG redis-server' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+REDISSERVERS_PRD=($(grep ';PRD redis-server' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+TERRACOTTASERVERS_STG=($(grep ';STG terracotta' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+TERRACOTTASERVERS_PRD=($(grep ';PRD terracotta' $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^\([^;]*\).*$/\1/" | tr -t '\n' ' '))
+
+# Autodetect environment STG or PRD
+if [[ $HOSTNAME =~ ^madus[0-9]*$ ]]; then
+	APPSERVERS=( "${APPSERVERS_STG[@]}" )
+	WEBSERVERS=( "${WEBSERVERS_STG[@]}" )
+	INFINISPANSERVERS=( "${INFINISPANSERVERS_STG[@]}" )
+	REDISSERVERS=( "${REDISSERVERS_STG[@]}" )
+	TERRACOTTASERVERS=( "${TERRACOTTASERVERS_STG[@]}" )
+	export STG="yes"
+	export ENV="STG"
+else
+	APPSERVERS=( ${APPSERVERS_PRD[@]} )
+	WEBSERVERS=( ${WEBSERVERS_PRD[@]} )
+	INFINISPANSERVERS=( "${INFINISPANSERVERS_PRD[@]}" )
+	REDISSERVERS=( "${REDISSERVERS_PRD[@]}" )
+	TERRACOTTASERVERS=( "${TERRACOTTASERVERS_PRD[@]}" )
+	export ENV="PRD"
+fi
+
+# APPS
+APPS=($(grep ";$ENV APP" $VM_CATALOG | grep -vE "($DISABLED_SERVERS)" | sed -e "s/^[^;]*;$ENV APP \([^ ]*\).*$/\1/" | sort -u | tr -t '\n' ' '))
+
+# TEMP FILES
+TMP=${TMP:-"$LOCK_DIR/output"}
+TMP_STATUS="$LOCK_DIR/status"
+TMP_STATUS2="$LOCK_DIR/status2"
+export NODES_LIST_FILE=${NODES_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+export APP_LIST_FILE=${APP_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+export TC_LIST_FILE=${TC_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+export ISPN_LIST_FILE=${ISPN_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+export REDIS_LIST_FILE=${REDIS_LIST_FILE:-$(mktemp -p $LOCK_DIR)}
+
+# DEBUG
+#DEBUG=echo

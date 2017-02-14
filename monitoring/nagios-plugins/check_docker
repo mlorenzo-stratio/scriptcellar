@@ -1,0 +1,89 @@
+#!/bin/bash
+
+# TODO:
+# - Add GC Stats
+
+DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+
+function help(){
+cat << EOM
+Usage: check_docker -m <metric> [-s]
+
+Metrics:
+    topcpu:             Top containers CPU usage
+    topmem:             Top containers Memory usage
+    topnet:             Top containers Net usage
+    running:            Running containers
+EOM
+}
+
+# Exit status variables
+UNKNOWN=3
+CRITICAL=2
+WARNING=1
+OK=0
+
+# VARIABLES
+HOST=${HOST:-"0.0.0.0"}
+MSGHEADER="Docker"
+
+# Get options
+while getopts "m:sh" option; do
+   case $option in
+      m)      STAT=$OPTARG ;;
+      s)      SUDO="sudo" ;;
+      h|\?)   help ; exit 0 ;;
+      *)      help ; exit $UNKNOWN ;;
+   esac
+done
+
+##########################################################
+
+# Clean temp files upon exit
+function cleanup(){
+    rm -f "$tmp" "$stderr" # Remove temp files
+}
+trap cleanup 0
+
+# Define trap function to execute a method upon error on failure and exit
+function error(){
+    local parent_lineno="$1"
+    local message="$2"
+    local code="${3:-$UNKNOWN}"
+    local funcname="$4"
+    if [ ! -z "$funcname" ]; then
+        funcname="on function $funcname or "
+    fi
+    if [[ -n "$message" ]] ; then
+        echo "Error ${funcname}near line ${parent_lineno}: ${message}; exiting with status ${code}"
+    else
+        echo "Error ${funcname}near line ${parent_lineno}; exiting with status ${code}"
+    fi
+    exit "${code}"
+}
+trap 'error ${LINENO} ${FUNCNAME}' ERR
+
+############################ MAIN START ############################
+
+if [ -z "$STAT" ]; then
+    echo "Metric is mandatory"
+    help
+    exit $UNKNOWN
+fi
+
+case $STAT in
+    topcpu) ;;
+    topmem) ;;
+    topnet) ;;
+    running)
+        statValue=$($SUDO docker ps -q | wc -l | tr -d '\n')
+        message="$MSGHEADER running containers: $statValue"
+        perfdata="containers_running=$statValue;"
+    ;;
+    *) help ; exit $UNKNOWN ;;
+esac
+
+# Print service information and performance data
+echo "$message | $perfdata"
+
+exit 0

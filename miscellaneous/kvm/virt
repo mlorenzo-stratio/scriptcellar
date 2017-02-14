@@ -1,0 +1,1126 @@
+#!/bin/bash
+
+LC_ALL=C
+KVMHOSTS_PREFIX="madup"
+KVMHOSTS_INIT="36"
+KVMHOSTS_NO="1"
+KVMHOSTS_END=$[ $KVMHOSTS_INIT + $KVMHOSTS_NO - 1 ]
+DEFINITIONS_PATH="/etc/libvirt"
+KVMHOST=$HOSTNAME
+if [ "$HOSTNAME" = "madup0706" ]; then
+	KVMHOST="madup0707"
+else
+	KVMHOST="madup0706"
+fi
+	
+
+SCRIPTNAME=$(basename $0)
+
+printblanks(){
+        local word="$1"
+        local length="$2"
+        if [ "$word" = "###ENTER###" ]; then
+                OUTPUT=$OUTPUT"\n"
+                return 0
+        fi
+        OUTPUT=$OUTPUT"$word"
+        wordlength=$(echo "$word" | wc -c)
+        while [ $wordlength -lt $length ]; do
+                OUTPUT="$OUTPUT "
+                ((++wordlength))
+        done
+}
+
+usage(){
+	cat << EOM
+Usage: $SCRIPTNAME search <guest1...guestN> | getvnc <guest1...guestN> | list [host1 host2...hostN]
+	  | running [host1 host2...hostN] | off [host1 host2...hostN] | info <guest1...guestN>
+	  | list-disks [guest1...guestN|host1...hostN] | list-ifaces [guest1...guestN|host1...hostN]
+	  | define <guest> <host> | undefine <guest1...guestN> | start <guest1...guestN|host>
+	  | autostart <guest1...guestN> | reboot <guest1...guestN|host> | stop <guest1...guestN|host>
+	  | force-stop <guest1...guestN> | suspend <guest1...guestN|host> | resume <guest1...guestN|host>
+	  | clone <orig_guest> <dest_guest> | move-disk <guest> <repository> | move <guest> <host>
+	  | check-disks <guest1...guestN|host> | disk-stats <guest1...guestN> | getmem <guest1...guestN>
+	  | setmem <guest> <mem> | getcpu <guest1...guestN> | setcpu <guest> <cpu> | sync
+
+KVM INFO
+	search|s <guest1...guestN>			Search <guest> in KVM cluster
+	getvnc|v <guest1...guestN>			Print <guest> VNC connection command
+	info <guest1...guestN>				Print <guest> info
+	list|l [host1 host2...hostN]			List guests within specified <host> or all hosts if none specified
+	running|r [host1 host2...hostN]			List guests running within specified <host> or all hosts if none specified
+	off|o [host1 host2...hostN]			List guests shut off within specified <host> or all hosts if none specified
+	list-disks|d [guest1...guestN|host1...hostN]	List all virtual disks in KVM cluster, list guest(s) or host(s)
+	list-ifaces|i [guest1...guestN|host1...hostN]	List all virtual interfaces in KVM cluster, guest(s) or host(s)
+
+KVM OPERATIONS
+	define <guest> <host>				Define <guest> on <host>
+	undefine <guest1...guestN>			Delete <guest> from a host
+	autostart <guest1...guestN>			Set autostart for <guest> on the host where it is defined
+	start <guest1...guestN|host>			Start a defined <guest> or all guests in <host>
+	reboot <guest1...guestN|host>			Reboot a started <guest> or all guests in <host>
+	stop <guest1...guestN|host>			Stop a started <guest> or all guests in host
+	force-stop <guest1...guestN>			Force stop a started <guest>
+	suspend <guest1...guestN|host>			Suspend a started <guest> or all guests in <host>
+	resume <guest1...guestN|host>			Resume a suspended <guest> or all guests in <host>
+
+KVM MANAGEMENT
+	clone <orig_guest> <dest_guest>			Clone <orig_guest>'s disks and link them to <dest_guest>
+	move <guest> <repository>			Move specified <guest>'s disk to <repository>. Repository may be nfs or local
+	check-disks <guest1...guestN|host>		Check <guest>'s, <host>'s or every disk for errors
+	disk-stats <guest1...guestN>			Display <guest>'s disks statistics
+	getmem <guest1...guestN>			Display <guest>'s mem
+	setmem <guest> <mem>				Set <guest>'s <mem>
+	getcpu <guest1...guestN>			Display <guest>'s vcpu
+	setcpu <guest> <cpu>				Set <guest>'s <vcpu>
+	sync						Synchronizes $HOSTNAME:/etc/libvirt/ to $KVMHOST:/etc/libvirt
+	
+EOM
+}
+
+# define     => define
+# start      => start
+# stop       => shutdown
+# reboot     => reboot
+# undefine   => undefine
+# force-stop => destroy
+# suspend    => suspend
+# resume     => resume
+
+# OUTPUT ERROR CODES
+MISSING_ARG=2
+NO_KVM_HOST=3
+NO_KVM_GUEST_DISK=4
+KVM_GUEST_NOT_FOUND=5
+KVM_GUEST_ALREADY_STARTED=6
+KVMHOST_NOT_FOUND=7
+KVM_GUEST_DEFINITION_NOT_FOUND=8
+ERROR_DEFINING_KVM_GUEST=9
+KVM_GUEST_ALREADY_DEFINED=10
+ERROR_REDEFINE_VM_RUNNING=11
+UNKNOWN_ERROR=12
+ABORTED_ACTION=13
+
+# returns "yes" or "no"
+askUser(){
+	read -p "Are you sure? (yes/no) " answer
+	while [ "$answer" != "yes" ] && [ "$answer" != "no" ]; do
+		read -p "Sorry. Incorrect answer. Try again (yes/no) " answer
+        done
+	echo "$answer"
+}
+
+# returns true if host is alive
+isAlive(){
+	local host=$1
+	if ping -c1 $host -W 1 > /dev/null 2>&1; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+# returns a string with all KVMHOSTS 
+kvmhosts(){
+	local out=""
+	for id in $(seq $KVMHOSTS_INIT $KVMHOSTS_END); do
+		out=$out" $KVMHOSTS_PREFIX$id"
+	done
+	echo $out | sed -e "s/^ //"
+}
+
+# returns wether $1 is a guest or a host
+isHost(){
+	local arg=$1
+	HOSTS=$(kvmhosts | sed -e 's/ /|/g')
+	if echo $arg | grep -qE "^($HOSTS)$"; then
+		return 0
+	else
+		return 1
+	fi
+}
+
+# returns host in which guest is defined
+getHost(){
+	local vm=$1
+	local found=""
+	local hosts=""
+	HOSTS=$(kvmhosts)
+	for host in $HOSTS ; do
+		result=$(ssh $host "LC_ALL=C virsh list --all" | grep -E "^ [0-9-]+" | sed -e "s/^[[:space:]]*[0-9-]*[[:space:]]*\([a-z0-9-]*\)[[:space:]]*\([a-z]*\).*$/\1/")
+		if echo $result | tr -t ' ' '\n' | grep -qE "^$vm$"; then
+			echo -n "$host"
+			found=1
+		fi
+	done
+	if [ -z "$found" ]; then
+		echo "_notfound_"
+		return 1
+	fi
+}
+
+# search guest $1
+search(){
+	local vm=""
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ -n "$host" -a "$host" != "_notfound_" ]; then
+			info=$(ssh $host "LC_ALL=C virsh list --all --title" | tr -s ' ' | grep -E "^ [0-9-]+" | sed -e "s/^[[:space:]]*[0-9-]*[[:space:]]*\([a-z0-9-]*\)[[:space:]]*\([a-z ]*\)[[:space:]]* [a-z ]*/\1|\2|/" -e "s/[[:space:]]*|/|/g" | grep -E "^$vm\|")
+			state=$(echo $info | cut -d '|' -f2)
+			title=$(echo $info | cut -d '|' -f3-)
+			echo "$vm is $state and defined in $host ($title)"
+		elif [ "$host" = "_notfound_" ]; then
+			echo "$vm not found!"
+		else
+			echo "Unknown error while searching for $vm!!"
+		fi
+	done
+}
+
+# returns whether the $vm is shut off or not
+# 0 is shut off
+# 1 is running
+# 2 is neither running nor shut off
+isShutOff(){
+	local vm=$1
+	local status=$(search $vm | sed -e "s/shut off/shutoff/" | cut -d ' ' -f3)
+	if [ "$status" = "shutoff" ]; then
+		return 0
+	elif [ "$status" = "running" ]; then
+		return 1
+	else
+		return 2
+	fi
+}
+
+# returns whether the $vm is running or not
+# 0 is running
+# 1 is shut off
+# 2 is neither running nor shut off
+isRunning(){
+	local vm=$1
+	local status=$(search $vm | sed -e "s/shut off/shutoff/" | cut -d ' ' -f3)
+	if [ "$status" = "running" ]; then
+		return 0
+	elif [ "$status" = "shutoff" ]; then
+		return 1
+	else
+		return 2
+	fi
+}
+
+# prints $vm vnc remote console command
+info(){
+	local vm=""
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ -n "$host" -a "$host" != "_notfound_" ]; then
+			echo "$vm:"
+			ssh $host "LC_ALL=C virsh dominfo $vm"
+		elif [ "$host" = "_notfound_" ]; then
+			echo "Guest $vm not found!"
+		else
+			echo "Unknown error while searching for $vm!!"
+		fi
+	done
+}
+
+# prints $vm vnc remote console command
+getVNCDisplay(){
+	local vm=""
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ -n "$host" -a "$host" != "_notfound_" ]; then
+			port=$(ssh $host "LC_ALL=C virsh vncdisplay $vm | grep : | cut -d':' -f2")
+			vncdisplay="vncviewer -via root@$host localhost:$port"
+			echo "$vm: $vncdisplay"
+		elif [ "$host" = "_notfound_" ]; then
+			echo "Guest $vm not found!"
+		else
+			echo "Unknown error while searching for $vm!!"
+		fi
+	done
+}
+
+# returns all guests in one line so we can iterate over it
+getGuests(){
+	local output=""
+	local host=""
+	HOSTS=$(kvmhosts)
+	for host in $HOSTS ; do
+		backIFS=$IFS
+		IFS=$'\n'
+		for line in $(ssh $host "LC_ALL=C virsh list --all --title" | grep -E "^ [0-9-]+" | sed -e "s/^[[:space:]]*[0-9-]*[[:space:]]*\([a-z0-9-]*\)[[:space:]]*\([a-z ]*\)[[:space:]]* [a-z ]*/\1|\2|/" -e "s/[[:space:]]*|/|/g"); do
+			vm=$(echo $line | cut -d '|' -f1)
+			output="$output $vm"
+		done
+		IFS=$backIFS
+	done
+	echo $output | sed -e "s/^ //"
+}
+
+# list guests in $*
+list(){
+	local arg=$1
+	shift
+	local OUTPUT=""
+	local ERRORS=""
+	local host=""
+	printblanks "Host" 15
+	printblanks "VM" 25
+	printblanks "Status" 15
+	printblanks "Description" 20
+	printblanks "###ENTER###"
+	printblanks "------------------------------------------------------------------------------------" 75
+	printblanks "###ENTER###"
+	HOSTS=${*:-"$(kvmhosts)"}
+	for host in $HOSTS ; do
+		backIFS=$IFS
+		IFS=$'\n'
+		if ! isHost $host; then
+			ERRORS="$ERRORS\n\t · $host is not a KVM host!"
+			continue
+		fi
+		for line in $(ssh $host "LC_ALL=C virsh list --all --title" | grep -E "^ [0-9-]+" | sed -e "s/^[[:space:]]*[0-9-]*[[:space:]]*\([a-z_0-9-]*\)[[:space:]]*\([a-z ]*\)[[:space:]]* [a-z ]*/\1|\2|/" -e "s/[[:space:]]*|/|/g"); do
+			vm=$(echo $line | cut -d '|' -f1)
+			state=$(echo $line | cut -d '|' -f2)
+			title=$(echo $line | cut -d '|' -f3)
+			if [ "$arg" = "_running_" -a "$state" != "running" ]; then
+				continue
+			elif [ "$arg" = "_off_" -a "$state" != "shut off" ]; then
+				continue
+			fi
+			printblanks "$host" 15
+			printblanks "$vm" 25
+			printblanks "$state" 15
+			printblanks "$title" 20
+			printblanks "###ENTER###"
+		done
+		IFS=$backIFS
+	done
+	echo -e "$OUTPUT"
+	if [ -n "$ERRORS" ]; then
+		echo -n "Found the following errors: "
+		echo -e "$ERRORS\n"
+		exit $NO_KVM_HOST
+	fi
+}
+
+# lists guest(s)' disks
+list_disks(){
+	echo "TODO!!!"
+ 	exit
+	local vms=${*:-$(getGuests)}
+	local OUTPUT=""
+	local ERRORS=""
+	local -a refresh
+	i=1
+	local host=""
+	for host in $(seq -w $KVMHOSTS_INIT $KVMHOSTS_END); do
+		refresh[$i]=0
+		((i++))
+	done
+	printblanks "Host" 15
+	printblanks "VM" 25
+	printblanks "Pool" 10
+	printblanks "ID" 10
+	printblanks "Disk" 35
+	printblanks "Size" 10
+	printblanks "###ENTER###"
+	printblanks "----------------------------------------------------------------------------------------------------" 105
+	printblanks "###ENTER###"
+	for vm in $vms; do
+		local host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+		host_id=$(echo $host | sed -e "s/^$KVMHOSTS_PREFIX\([0-9]*\)/\1/")
+		if [ "${refresh[$host_id]}" = 0 ]; then
+			ssh $host "virsh pool-refresh NFS; virsh pool-refresh NFS2" > /dev/null
+			refresh[$host_id]=1
+		fi
+		backIFS=$IFS
+		IFS=$'\n'
+		for disk in $(ssh $host "LC_ALL=C virsh domblklist $vm" | grep -vE "^(-|T|$)" | tr -s ' ' | tr -t ' ' '|'); do
+			id=$(echo $disk | cut -d'|' -f1)
+			disk=$(echo $disk | cut -d'|' -f2)
+			pool=$(ssh $host "LC_ALL=C virsh vol-pool $disk" 2>/dev/null | grep -v ^$)
+			exit_code=$?
+			if [ "$exit_code" = 0 ]; then
+				size=$(LC_ALL=C ssh $host "virsh vol-info $disk" | grep ^Capacity | tr -s ' ' | cut -d ' ' -f2-3)
+				printblanks "$host" 15
+				printblanks "$vm" 25
+				if [[ "$pool" =~ NFS ]]; then
+					printblanks "$pool" 10
+				else
+					printblanks "$host" 10
+				fi
+				printblanks "$id" 10
+				disk=$(basename $disk)
+				printblanks "$disk" 35
+				printblanks "$size" 10
+			else
+				ERRORS=$ERRORS"\n\t· $vm ($host): ($id)$disk doesn't exist!"
+			fi
+			printblanks "###ENTER###"
+		done
+		IFS=$backIFS
+	done
+	echo -e "$OUTPUT" | tr -s '\n'
+	echo
+	if [ -n "$ERRORS" ]; then
+		echo -n "Found the following errors: "
+		echo -e "$ERRORS\n"
+		exit $NO_KVM_GUEST_DISK
+	fi
+}
+
+# list guest(s)' ifaces
+list_ifaces(){
+        local vms=${*:-$(getGuests)}
+        local OUTPUT=""
+        local ERRORS=""
+        printblanks "Host" 15
+        printblanks "VM" 25
+        printblanks "Type" 15
+        printblanks "Source" 15
+        printblanks "MAC Address" 25
+        printblanks "IP Address" 15
+        printblanks "###ENTER###"
+        printblanks "---------------------------------------------------------------------------------------------------------" 110
+        printblanks "###ENTER###"
+        for vm in $vms; do
+                local host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+                backIFS=$IFS
+                IFS=$'\n'
+                for iface in $(ssh $host "LC_ALL=C virsh domiflist $vm | tail -n+3 | head -n+1" | grep -vE "^(-|T|$)" | tr -s ' ' | tr -t ' ' '|'); do
+                        type=$(echo $iface | cut -d'|' -f2)
+			source=$(echo $iface | cut -d'|' -f3)
+			mac=$(echo $iface | cut -d'|' -f5)
+                        exit_code=$?
+                        if [ "$exit_code" = 0 ]; then
+                                printblanks "$host" 15
+                                printblanks "$vm" 25
+                                printblanks "$type" 15
+                                printblanks "$source" 15
+                                printblanks "$mac" 25
+				printblanks "`mac2ip $mac`" 15
+                        fi
+                        printblanks "###ENTER###"
+                done
+                IFS=$backIFS
+        done
+        echo -e "$OUTPUT" | tr -s '\n'
+        echo
+        if [ -n "$ERRORS" ]; then
+                echo -n "Found the following errors: "
+                echo -e "$ERRORS\n"
+                exit $NO_KVM_GUEST_DISK
+        fi
+}
+
+# undefines guest(s) from a kvm host
+undefine(){
+	local answer=""
+	local host=""
+	local no_ask=$1
+	if [ "$no_ask" = "_noask_" ]; then
+		shift
+	else
+		echo "You are about to undefine the following guests:"
+		for vm in $*; do
+			echo -e "\t· $vm"
+		done
+	fi
+	if [ "$no_ask" = "_noask_" ]; then
+		answer="yes"
+	else
+		answer=$(askUser)
+	fi
+	[ "$answer" = "yes" ] && \
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+
+       		echo -n "$host: "
+		ssh $host "LC_ALL=C virsh undefine $vm | tr -d '\n'"
+		echo
+	done
+}
+
+# defines $vm on $host
+definitionFound(){
+	local vm=$1
+	if [ -r "$DEFINITIONS_PATH/$vm.xml" ]; then
+		echo $DEFINITIONS_PATH/$vm.xml
+		return 0
+	else
+		return 1
+	fi
+	
+}
+
+# set autostart for $vm
+autostart(){
+	local vm=""
+	local host=""
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+                echo -n "$host: "
+		ssh $host "LC_ALL=C virsh autostart $vm | tr -d '\n'"
+		echo
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -ne "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+}
+
+# defines $vm on $host
+define(){
+	local vm=""
+	local host=""
+	local search_host=""
+	# find kvm host in args
+	for vm in $*; do
+        	if isHost $vm; then
+        		host=$vm
+        		continue
+        	fi
+        	VMs=$VMs" $vm"
+		MSG=$MSG"\n\t· $vm"
+	done
+	VMs=$(echo $VMs | sed -e "s/^ //") 
+	if [ -z "$host" ]; then
+		echo "Usage: $SCRIPTNAME define <guest1...guestN> <host>"
+		exit $MISSING_ARG
+	fi
+
+	echo -e "You are about to define the following guests on $host:$MSG"
+	answer=$(askUser)
+
+	[ "$answer" = "yes" ] && \
+	for vm in $VMs; do
+		# if not found
+		if ! search_host=$(getHost $vm) ; then
+			if file=$(definitionFound $vm); then
+				echo -n "$host: "
+				{ scp -q $file $host:/tmp && ssh $host "LC_ALL=C virsh define /tmp/$vm.xml | tr -d '\n'"; } || \
+				{ echo "Error while defining $vm on $host with $file" ; exit $ERROR_DEFINING_KVM_GUEST; }
+				echo
+				return 0
+			else
+				echo "No definition found in $DEFINITIONS_PATH for $vm!"
+				return $KVM_GUEST_DEFINITION_NOT_FOUND
+			fi
+		elif [ "$host" != "$search_host" ]; then
+			if isRunning $vm; then
+				search $vm
+				echo "Cannot define and start $vm on $host!!!"
+				echo "Use \"$SCRIPTNAME move <guest> <host>\" instead"
+				exit $ERROR_REDEFINE_VM_RUNNING
+			else
+				undefine _noask_ $vm
+				sleep 0.5
+				if file=$(definitionFound $vm); then
+					echo -n "$host: "
+					{ scp -q $file $host:/tmp && ssh $host "LC_ALL=C virsh define /tmp/$vm.xml | tr -d '\n'"; } || \
+					{ echo "Error while defining $vm on $host with $file" ; exit $ERROR_DEFINING_KVM_GUEST; }
+					echo
+				else
+					echo "No definition found in $DEFINITIONS_PATH for $vm!"
+					return $KVM_GUEST_DEFINITION_NOT_FOUND
+				fi
+			fi
+		else
+			echo "$vm already defined on $search_host"
+			echo "Do you want to redefine $vm on $search_host?"
+			answer=$(askUser)
+			if [ "$answer" = "yes" ]; then
+				if file=$(definitionFound $vm); then
+					echo -n "$search_host: "
+					{ scp -q $file $search_host:/tmp && ssh $search_host "LC_ALL=C virsh define /tmp/$vm.xml | tr -d '\n'"; } || \
+					{ echo "Error while defining $vm on $search_host with $file" ; exit $ERROR_DEFINING_KVM_GUEST; }
+					echo
+				else
+					echo "No definition found in $DEFINITIONS_PATH for $vm!"
+					return $KVM_GUEST_DEFINITION_NOT_FOUND
+				fi
+			else
+				return $KVM_GUEST_ALREADY_DEFINED
+			fi
+		fi
+	done
+}
+
+# starts a defined guest
+start(){
+	local answer=""
+	local host=""
+	local host_dest=""
+	local undefined_defined=""
+	local VMs=""
+	for vm in $*; do
+		if isHost $vm; then
+			host_dest=$vm
+			continue
+		fi
+		VMs=$VMs" $vm"
+		MSG=$MSG"\n\t· $vm"
+	done
+	VMs=$(echo $VMs | sed -e "s/^ //") 
+	if [ -z "$host_dest" ]; then
+		if [ ${#} -gt 1 ]; then
+			echo -e "You are about to start the following guests:$MSG"
+			answer=$(askUser)
+		else
+			answer="yes"
+		fi
+	elif [ ${#} -gt 2 ]; then
+		echo -n "You are about to start the following guests on $host_dest"
+		if [ -n "$host_dest" ]; then
+			echo -n " on $host_dest"
+		fi
+		echo -e ":$MSG"
+		answer=$(askUser)
+	else
+		answer="yes"
+	fi
+	[ "$answer" = "yes" ] && \
+	for vm in $VMs; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			if file=$(definitionFound $vm); then
+				host_dest=${host_dest:-$(kvmhosts | cut -d' ' -f1)}
+				echo "Do you want to define $vm on $host_dest with $file?"
+				answer=$(askUser)
+				if [ "$answer" = "yes" ]; then
+					if define $vm $host_dest; then
+						undefined_defined=1
+					fi
+				else
+					echo "Skipping undefined $vm..."
+					continue
+				fi
+			else
+				ERRORS=$ERRORS"\n\t· $vm: definition file not found!"
+			fi
+			if [ -z "$undefined_defined" ]; then continue ; fi
+			echo -n "$host_dest: "
+			ssh $host_dest "LC_ALL=C virsh start $vm | tr -d '\n'" 
+			echo
+		elif [ -n "$host_dest" ] && [ "$host" != "$host_dest" ]; then
+			if isRunning $vm; then
+				search $vm
+				echo "Cannot define and start $vm on $host_dest!!!"
+				echo "Use \"$SCRIPTNAME move <guest> <host>\" instead"
+				exit $ERROR_REDEFINE_VM_RUNNING
+			fi
+			undefine _noask_ $vm
+			sleep 0.5
+			define $vm $host_dest
+		        start $vm $host_dest
+		else
+			echo -n "$host: "
+			ssh $host "LC_ALL=C virsh start $vm | tr -d '\n'" 
+			echo
+		fi
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -ne "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                return $KVM_GUEST_NOT_FOUND
+        fi
+	return 0
+}
+
+# reboots guest(s)
+reboot(){
+	local answer=""
+	if [ ${#} -gt 1 ]; then
+		echo "You are about to reboot the following guests:"
+		for vm in $*; do
+			echo -e "\t· $vm"
+		done
+		answer=$(askUser)
+	else
+		answer="yes"
+	fi
+	[ "$answer" = "yes" ] && \
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+                echo -n "$host: "
+		ssh $host "LC_ALL=C virsh reboot $vm | tr -d '\n'"
+		echo
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -ne "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+}
+
+# stops guest(s)
+stop(){
+	local answer=""
+	if [ ${#} -gt 1 ]; then
+		echo "You are about to stop the following guests:"
+		for vm in $*; do
+			echo -e "\t· $vm"
+		done
+		answer=$(askUser)
+	else
+		answer="yes"
+	fi
+	[ "$answer" = "yes" ] && \
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+                echo -n "$host: "
+		ssh $host "LC_ALL=C virsh shutdown $vm | tr -d '\n'"
+		echo
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -ne "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+	return 0
+}
+
+# force-stops guest(s)
+force_stop(){
+	local answer=""
+	echo "You are about to force-stop the following guests:"
+	for vm in $*; do
+		echo -e "\t· $vm"
+	done
+	answer=$(askUser)
+	[ "$answer" = "yes" ] && \
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+                echo -n "$host: "
+		ssh $host "LC_ALL=C virsh destroy $vm | tr -d '\n'"
+		echo
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -en "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+}
+
+# suspends guest(s)
+suspend(){
+	local answer=""
+	if [ ${#} -gt 1 ]; then
+		echo "You are about to suspend the following guests:"
+		for vm in $*; do
+			echo -e "\t· $vm"
+		done
+		answer=$(askUser)
+	else
+		answer="yes"
+	fi
+	[ "$answer" = "yes" ] && \
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+                echo -n "$host: "
+		ssh $host "LC_ALL=C virsh suspend $vm | tr -d '\n'"
+		echo
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -en "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+}
+
+# resumes guest(s)
+resume(){
+	local answer=""
+	if [ ${#} -gt 1 ]; then
+		echo "You are about to resume the following guests:"
+		for vm in $*; do
+			echo -e "\t· $vm"
+		done
+		answer=$(askUser)
+	else
+		answer="yes"
+	fi
+	[ "$answer" = "yes" ] && \
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+                echo -n "$host: "
+		ssh $host "LC_ALL=C virsh resume $vm | tr -d '\n'"
+		echo
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -ne "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+}
+
+# clones guest $1 to $2
+clone(){
+	orig_vm=$1
+	dest_vm=$2
+	host=$(getHost $orig_vm)
+	if [ "$host" = "_notfound_" ]; then
+		echo "Error! $vm: undefined guest!"
+		exit $KVM_GUEST_NOT_FOUND
+	fi
+	echo "You are about to clone $orig_vm into $dest_vm. "
+	answer=$(askUser)
+	if [ $answer = "yes" ]
+	then 
+		###
+		echo "TODO: clone $orig_vm $dest_vm"
+	else
+		echo "Aborted by user"
+	fi
+}
+
+# moves guest to specified host
+move(){
+	local vm=$1
+	local host_dest=$2
+	local host_orig=$(getHost $vm)
+	local status=""
+	if ! isHost $host_dest; then
+		echo "Error! $host_dest does not belong to KVM platform"
+		exit $KVMHOST_NOT_FOUND
+	fi
+	if [ "$host_orig" = "_notfound_" ]; then
+		echo "Error! $vm: undefined guest!"
+		exit $KVM_GUEST_NOT_FOUND
+	fi
+	if [ "$host_dest" = "$host_orig" ]; then
+		echo "Error! $vm already started on $host_orig"
+		exit $KVM_GUEST_ALREADY_STARTED
+	fi
+
+	echo "You are about to move $vm from $host_orig to $host_dest"
+	answer=$(askUser)
+	if [ $answer != "yes" ]; then
+		echo "Aborted."
+		exit $ABORTED_ACTION
+	fi
+
+	if isRunning $vm && ! isShutOff $vm; then
+		status="running"
+		stop $vm
+		echo -n "Waiting for $vm to stop"
+		while [[ $(search $vm) =~ running ]]; do
+			sleep 0.5
+			echo -n "."
+		done
+		echo " done."
+	else
+		echo "Unknown guest state:"
+		search $vm
+		exit $UNKNOWN_ERROR
+	fi
+	undefine _noask_ $vm
+	sleep 0.5
+	define $vm $host_dest
+	if [ "$status" = "running" ]; then
+        	start $vm $host_dest
+	fi
+}
+
+# moves guest disk to specified repository
+move-disk(){
+	vm=$1
+	repository=$3
+	host=$(getHost $vm)
+	if [ "$host" = "_notfound_" ]; then
+		echo "Error! $vm: undefined guest!"
+		exit $KVM_GUEST_NOT_FOUND
+	fi
+	echo "TODO: move-disk $vm $repository"
+}
+
+# checks guest(s) disks
+check_disks(){
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+		###
+		echo "TODO: check-disks $vm"
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -ne "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+}
+
+# displays guest(s) disks status
+disks-stats(){
+	for vm in $*; do
+		host=$(getHost $vm)
+		if [ "$host" = "_notfound_" ]; then
+			ERRORS=$ERRORS"\n\t· $vm: undefined guest!"
+			continue
+		fi
+		###
+		echo "TODO: disks-stats $vm"
+	done
+        if [ -n "$ERRORS" ]; then
+                echo -ne "\nFound the following errors: "
+                echo -e "$ERRORS\n"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+}
+
+# Syncs configuration to the other server
+
+# sets guest memory
+setmem(){
+        vm=$1
+        memory=$2
+        host=$(getHost $vm)
+        if [ "$host" = "_notfound_" ]; then
+                echo "Error! $vm: undefined guest!"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+        ###
+        echo "TODO: move $vm $repository"
+}
+
+# sets guest cpu
+setcpu(){
+        vm=$1
+        cpu=$2
+        host=$(getHost $vm)
+        if [ "$host" = "_notfound_" ]; then
+                echo "Error! $vm: undefined guest!"
+                exit $KVM_GUEST_NOT_FOUND
+        fi
+        ###                      
+	echo ssh $host "sed -i -e \"s/^\([[:space:]]*[<]vcpu placement='static'[>]\)[0-9]*\([<]/vcpu[>]\).*$/\1$cpu\2/\" $DEFINITIONS_PATH/qemu/$vm.xml"
+	echo "VCPU value updated to $cpu in $vm"
+}
+
+# Synchronizes configuration to the other node
+sync_conf(){
+	echo "You are about to sync the configuration to $KVMHOST:$DEFINITIONS_PATH"
+	answer=$(askUser)
+	[ "$answer" != "yes" ] && exit
+	echo -n "Syncing configuration... "
+	rsync -a $DEFINITIONS_PATH/ $KVMHOST:$DEFINITIONS_PATH/
+	EXIT_CODE=$?
+	if [ $EXIT_CODE = 0 ]; then
+		echo "OK"
+	else
+		echo "ERROR"
+	fi
+	return $EXIT_CODE
+}
+
+declare action
+while [ "$#" -gt 0 ]; do
+	case $1 in
+		-h  | --help)		usage ; exit 0 ;;
+		-s  | search)		action=1 ; shift
+					if [ -z "$1" ]; then
+						echo "Usage: $SCRIPTNAME search <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						search $* ; exit $?
+					fi ;;
+		-v  | getvnc)		action=1 ; shift
+					if [ -z "$1" ]; then
+						echo "Usage: $SCRIPTNAME getvnc <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						getVNCDisplay $* ; exit $?
+					fi ;;
+		-l  | list)		action=1 ; shift ; list $* ; exit $? ;;
+		-r  | running)		action=1 ; shift ; list _running_ $* ; exit $? ;;
+		-o  | off)		action=1 ; shift ; list _off_ $* ; exit $? ;;
+		-d  | list-disks)	action=1 ; shift ; list_disks $* ; exit $? ;;
+		-i  | list-ifaces)	action=1 ; shift ; list_ifaces $* ; exit $? ;;
+		info)			action=1 ; shift 
+					if [ -z "$1" ]; then
+						echo "Usage: $SCRIPTNAME info <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						info $* ; exit $?
+					fi ;;
+		define)			action=1 ; shift
+					if [ -z "$1" ] || [ -z "$2" ]; then
+						echo "Usage: $SCRIPTNAME define <guest1...guestN> <host>"
+						exit $MISSING_ARG
+					else
+						define $* ; exit $?
+					fi ;; 
+		undefine)		action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME undefine <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						undefine $* ; exit $?
+					fi ;; 
+		autostart)		action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME autostart <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						autostart $* ; exit $?
+					fi ;; 
+		start)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME start <guest1...guestN|host>"
+						exit $MISSING_ARG
+					else
+						start $* ; exit $?
+					fi ;; 
+		reboot)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME reboot <guest1...guestN|host>"
+						exit $MISSING_ARG
+					else
+						reboot $* ; exit $?
+					fi ;; 
+		sync)			
+					sync_conf ; exit $?;;
+		stop)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME stop <guest1...guestN|host>"
+						exit $MISSING_ARG
+					else
+						stop $* ; exit $?
+					fi ;; 
+		force-stop)		action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME force-stop <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						force_stop $* ; exit $?
+					fi ;; 
+		suspend)		action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME suspend <guest1...guestN|host>"
+						exit $MISSING_ARG
+					else
+						suspend $* ; exit $?
+					fi ;; 
+		resume)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME resume <guest1...guestN|host>"
+						exit $MISSING_ARG
+					else
+						resume $* ; exit $?
+					fi ;; 
+		clone)			action=1 ; shift
+					if [ -z "$1" ] || [ -z "$2" ]; then
+						echo "Usage: $SCRIPTNAME clone <orig_guest> <dest_guest>"
+						exit $MISSING_ARG
+					else
+						clone $1 $2 ; exit $?
+					fi ;; 
+
+		move)			action=1 ; shift
+					if [ -z "$1" ] || [ -z "$2" ]; then
+						echo "Usage: $SCRIPTNAME move <guest> <host>"
+						exit $MISSING_ARG
+					else
+						move $1 $2 ; exit $?
+					fi ;; 
+		move-disk)		action=1 ; shift
+					if [ -z "$1" ] || [ -z "$2" ]; then
+						echo "Usage: $SCRIPTNAME move <guest> <repository>"
+						exit $MISSING_ARG
+					else
+						move-disk $1 $2 ; exit $?
+					fi ;; 
+		check-disks)		action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME check-disks <guest1...guestN|host>"
+						exit $MISSING_ARG
+					else
+						check_disks $* ; exit $?
+					fi ;; 
+		disks-stats)		action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME disks-stats <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						disks_stats $* ; exit $?
+					fi ;; 
+		getmem)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME getmem <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						getmem $* ; exit $?
+					fi ;; 
+		setmem)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME setmem <guest> <mem>"
+						exit $MISSING_ARG
+					else
+						setmem $* ; exit $?
+					fi ;; 
+		getcpu)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME getcpu <guest1...guestN>"
+						exit $MISSING_ARG
+					else
+						getcpu $*
+					fi ;; 
+		setcpu)			action=1 ; shift
+					if [ -z "$1" ] ; then
+						echo "Usage: $SCRIPTNAME setcpu <guest> <cpu>"
+						exit $MISSING_ARG
+					else
+						setcpu $* ; exit $?
+					fi ;;
+		*)			echo "$SCRIPTNAME: invalid option -- $1"; echo "Try \`$SCRIPTNAME --help' for more information."; exit 1 ;;
+	esac
+	shift
+done
+
+if [ -z "$action" ]; then
+	echo -e "No action specified!!\n"
+	usage
+	exit $MISSING_ARG
+fi

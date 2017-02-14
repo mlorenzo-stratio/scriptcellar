@@ -1,0 +1,39 @@
+#!/bin/bash
+
+TABLESPACE=$1
+WARNING=$2
+CRITICAL=$3
+
+if [ -z "$TABLESPACE" ]; then
+	echo "No args specified."
+	exit 1
+fi
+
+lt(){
+        num1=$1
+        num2=$2
+        if (( $(echo "${num1} < ${num2}" | bc) == 1 )); then
+                return 0;
+        else
+                return 1;
+        fi
+}
+
+TEMP=$(mktemp -p /dev/shm)
+
+sudo -u oracle /usr/local/nagios/libexec/check_oracle_extensions_front_sql $TABLESPACE > $TEMP
+read free total percentage < $TEMP
+
+if [ ! -s $TEMP ]; then
+	rm -f $TEMP
+        exit 3
+elif lt $free $WARNING; then
+	rm -f $TEMP
+        exit 1
+elif lt $free $CRITICAL; then
+	rm -f $TEMP
+        exit 2
+else
+	rm -f $TEMP
+        exit 0
+fi

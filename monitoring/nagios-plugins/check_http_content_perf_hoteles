@@ -1,0 +1,34 @@
+#!/bin/bash
+
+HOST="$1"
+PORT="$2"
+URL="$3"
+EXPR="$4"
+TIMEOUT="$5"
+WARNING="$6"
+CRITICAL="$7"
+
+NAGIOS_PLUGINS="/usr/local/nagios/libexec"
+
+if [ $# -lt 7 ]; then
+        echo "Usage: $0 <host> <port> <url> <expr> <timeout> <tcp_warning> <tcp_critical>"
+        exit 3
+fi
+
+OUTPUT=$(curl $HOST:$PORT/"$URL" -b "Cersei=B" 2>&1 | grep Hotel > /dev/null )
+EXIT_CODE1=$?
+echo $EXIT_CODE1
+PERFDATA=$($NAGIOS_PLUGINS/check_tcp -H $HOST -p $PORT -t $TIMEOUT -w $WARNING -c $CRITICAL)
+EXIT_CODE2=$?
+
+EXIT_CODE=0
+if [ "$EXIT_CODE1" = 2 ] || [ "$EXIT_CODE2" = 2 ]; then
+        EXIT_CODE=2
+elif [ "$EXIT_CODE1" = 1 ] || [ "$EXIT_CODE2" = 1 ]; then
+        EXIT_CODE=1
+fi
+
+perfdata=$(echo $PERFDATA | cut -d '|' -f2)
+message=$(echo $PERFDATA | cut -d '|' -f1)
+echo "$message ($OUTPUT) | $perfdata"
+exit $EXIT_CODE

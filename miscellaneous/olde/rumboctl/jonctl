@@ -1,0 +1,40 @@
+#!/bin/bash
+
+_USER="rumbo"
+JON_ENV="$1"
+JON_ACTION="$2"
+
+usage(){
+        echo "Usage: $0 <agent|server> <start|stop|info|kill>"
+        echo
+}
+
+checkUser(){
+        if [ "$USER" != "$_USER" ]; then
+                echo "User $USER is NOT allowed to execute this script. Only $_USER"
+                exit 2
+        fi
+}
+
+checkEnv(){
+	case $JON_ENV in
+	agent) 	JON_SERVER=$(hostname)
+		COMMAND_PREFIX="sudo -u jboss" 
+		JON_BIN="/usr/local/bin/.jon_adm.sh";;
+	server) JON_SERVER="madup0718"
+                COMMAND_PREFIX="ssh $JON_SERVER" 
+		JON_BIN="/rmb/jon/current/bin/rhq-server.sh" ;;
+	*) 	usage ;;
+	esac
+}
+
+### MAIN
+if [ -z "$1" -o -z "$2" ]; then
+        usage
+        exit 0
+fi
+
+checkUser
+checkEnv
+
+$COMMAND_PREFIX $JON_BIN $JON_ACTION

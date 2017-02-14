@@ -1,0 +1,356 @@
+#!/bin/bash
+
+SUDO="sudo -u jboss"
+kill_wait_seconds=25
+start_wait_seconds=300
+_USER="rumbo"
+
+# Autodetect environment STG or PRD
+if [[ $HOSTNAME =~ ^madus[0-9]*$ ]]; then
+	JBOSS_BASE="/ama/wh/STG/rmb"
+	NODE_PATTERN="phoenix_s*"
+else
+	JBOSS_BASE="/ama/wh/PRD/rmb"
+	NODE_PATTERN="phoenix_p*"
+fi
+JBOSS_DIR="$JBOSS_BASE/jboss/phoenix/server"
+JBOSS_LOGS="$JBOSS_BASE/logs"
+RUN="$JBOSS_BASE/jboss/phoenix/bin/run.sh"
+JMAP_HOME="$JBOSS_BASE/binaries/java/current/bin"
+HEAPDUMP_DIR="$JBOSS_BASE/logs/common/HEAP/"
+NODE_LIST=$(find $JBOSS_DIR -iname $NODE_PATTERN ! -path \*phoenix_p00_00\* -exec basename {} \; | sort)
+
+declare -A APP_CASTING=( [viajes]=vuelos
+			 [cruises-preview]=cruises )
+
+usage(){
+	echo "Usage: $0 <start|stop|status|kill|threaddump|heapdump> <node1 node2 ... nodeN>"
+	echo
+	availableNodes
+}
+
+availableNodes(){
+	echo "Available nodes are:"
+	for node in $NODE_LIST; do
+		echo -e "\t- $node"
+	done
+}
+
+checkUser(){ 
+	if [ "$USER" != "$_USER" ]; then
+		echo "User $USER is NOT allowed to execute this script. Only $_USER"
+		exit 2
+	fi
+}
+
+isAppRunning(){
+	if [ ! $APP ]; then return 1; fi
+	local NODE=$1
+	local APP=${APP_CASTING[$2]:-$2}
+	local PORT
+	mkdir -p /dev/shm/rumboctl
+	local tmpfile=$(mktemp -p /dev/shm/rumboctl)
+	let PORT=($(echo $NODE | cut -d '_' -f3 | sed -e s/^0*//)+50)*100+80
+	wget -S -q http://localhost:$PORT/$APP > $tmpfile 2>&1
+	local STATUS=$?
+	local RESPONSE=$(head -1 $tmpfile | cut -d ' ' -f2)
+	if [ "$RESPONSE" != 404 ] && [ "$RESPONSE" != 503 ] && [ $STATUS = 8 -o $STATUS = 0 ]; then
+		rm $tmpfile
+		return 0
+	fi
+	rm $tmpfile
+	return 1
+}
+
+isRunning(){
+	local NODE_NAME=$1
+	JBOSS_PID=$(ps -ef | grep -v grep |grep -v  jboss_ctl.  | grep $NODE_NAME | grep bin/java | awk '{print $2 }')
+        if [ -z "$JBOSS_PID" ]; then
+		return 1
+	else
+		return 0
+       	fi
+}
+
+checkNodes(){
+	for node in $NODES; do
+		if ! exist $node; then
+			echo "Specified node $node does NOT exist!!"
+			echo
+			availableNodes
+			exit 1
+		fi
+	done
+}
+
+exist(){
+	local _node=$1
+	exist=1
+	for node in $NODE_LIST; do
+   		if [ $_node = "$node" ]; then
+      			exist=0
+			break
+   		fi
+	done
+	return $exist 
+}
+
+linkGClog(){
+	local node=$1
+        GC_CURRENT="$JBOSS_LOGS/$node/gc_log/current_gc"
+	cd $JBOSS_LOGS/$node/gc_log/
+	GC_OUT2=$(ps -ef | grep ^jboss | grep $node | grep -v \/bin\/sh | sed -e "s/^.*gc_log\/\([-A-Z0-9]*.out\) .*$/\1/")
+	while [ -z "$GC_OUT2" ]; do
+		sleep 1
+		GC_OUT2=$(ps -ef | grep ^jboss | grep $node | grep -v \/bin\/sh | sed -e "s/^.*gc_log\/\([-A-Z0-9]*.out\) .*$/\1/")
+	done
+	while [ ! -e "$GC_OUT2" ]; do
+		sleep 1
+	done
+        $SUDO ln -sf $GC_OUT2 $GC_CURRENT
+}
+
+isDisabled(){
+	local NODE=$1
+        if [ -e "$JBOSS_DIR/$NODE/.maintenance" ]; then
+		true
+	else
+		false
+	fi
+}
+
+rotateNoHup(){
+	local NODE_HOME=$JBOSS_DIR/$1
+	# check for a nohup and rotate
+	if [ -e "$NODE_HOME/log/nohup.out" ]; then
+		$SUDO mv $NODE_HOME/log/nohup.out $NODE_HOME/log/nohup.out.old
+	else
+		$SUDO touch $NODE_HOME/log/nohup.out
+	fi
+}
+
+loadEnv(){
+	local NODE_HOME=$JBOSS_DIR/$1
+	if [ -e "$NODE_HOME/.set.env.cfg" ]; then
+		source $NODE_HOME/.set.env.cfg
+	fi
+}
+
+startNodes(){
+	echo "Starting JBoss nodes on $HOSTNAME: "
+	for node in $NODES; do
+       		if isDisabled $node; then
+			echo -e "\t- $node: NOT starting! Maintenance mode ON"
+			continue
+	        fi
+		if isRunning $node; then
+			echo -e "\t- $node: already running!"
+			continue
+		else
+			loadEnv
+			rotateNoHup $node
+		        $SUDO sh -c "/usr/bin/nohup $RUN -b 0.0.0.0 -c $node -Djboss.server.log.dir=../log/ >>$JBOSS_DIR/$node/log/nohup.out 2>&1 &"
+			echo -e "\t- $node: starting..."
+		fi
+		sleep 5
+		linkGClog $node
+	done
+}
+
+stopNodes(){
+	echo "Stopping JBoss nodes on $HOSTNAME: "
+	for node in $NODES; do
+		if isRunning $node; then
+			# Kill JBoss
+			$SUDO kill $JBOSS_PID
+			echo -e "\t- $node: stopping"
+			# Wait for it to die
+			while [ $kill_wait_seconds -ge 0 ]; do
+				if ! isRunning $node; then
+					echo -e "\t- $node: stopped"
+					break
+				fi
+				let kill_wait_seconds=kill_wait_seconds-1
+				sleep 1
+			done
+			# Kill JBoss as it didn't exit within $kill_wait_seconds time
+			for pid in $(ps -fu jboss|fgrep Xms|grep -v grep|grep " $node" |awk '{print $2}'); do
+	       			$SUDO kill -9 $pid
+				echo -e "\t- $node: killed!"
+			done
+		else
+			echo -e "\t- $node: already stopped!"
+			continue
+		fi
+	done
+}
+
+startDate(){
+	local node=$1
+	ps -ef | grep -v grep |grep -v  jboss_ctl.  | grep $node | grep bin/java | awk '{print $5 }'
+}
+
+waitForNode(){
+	# TODO: Get real startup time
+	local node=$NODES
+	if [ $isDialog ] ; then echo XXX ; fi
+	echo "Waiting for node $node($APP)@$HOSTNAME..."
+	if [ $isDialog ] ; then echo XXX ; fi
+	local seconds=0
+	while [ $seconds -le $start_wait_seconds ]; do
+		if isAppRunning $node $APP; then
+			if [ $isDialog ] ; then echo XXX ; fi
+			startup_time=$(grep "MicroKernel.*Started.*ms$" $JBOSS_LOGS/$node/nohup.out | sed -e "s/^.*Started in \(.*\)$/\1/")
+			echo -e "Waiting for node $node($APP)@$HOSTNAME...\n\t- $node@$APP started in $startup_time"
+			if [ $isDialog ] ; then echo XXX ; fi
+			sleep 1
+			return 0
+		fi
+		sleep 0.3
+		let seconds=seconds+1
+	done
+	if [ $isDialog ] ; then echo XXX ; fi
+	echo -e "\t- $node@$APP was unable to start after $start_wait_seconds seconds"
+	echo -e "\t- Please check node $node manually"
+	if [ $isDialog ] ; then echo XXX ; fi
+	return 1
+}
+
+statusNodes(){
+	NODES=${NODES:-$NODE_LIST}
+	echo "JBoss nodes status on $HOSTNAME: "
+	for node in $NODES; do
+		if isRunning $node; then
+			DATE=$(startDate $node)
+			echo -e "\t- $node: running PID:$JBOSS_PID,\tstarted $DATE"
+			[ ! -z $APP ] && if isAppRunning $node $APP; then
+				echo -e "\t\t- $APP@$node started"
+			else
+				echo -e "\t\t- $APP unable to start!! Check manually"
+			fi
+		elif isDisabled $node; then
+			echo -e "\t- $node: maintenance mode ON"
+			continue
+	        else
+			echo -e "\t- $node: NOT running"
+		fi
+	done
+}
+
+killNodes(){
+	echo "Killing JBoss nodes on $HOSTNAME: "
+	for node in $NODES; do
+		if isRunning $node; then
+			# Kill JBoss as it didn't exit within $kill_wait_seconds time
+			for pid in $(ps -fu jboss|fgrep Xms|grep -v grep|grep " $node" |awk '{print $2}'); do
+	       			$SUDO kill -9 $pid
+			done
+			echo -e "\t- $node: killed!"
+		else
+			echo -e "\t- $node: NOT running!"
+		fi
+	done
+}
+
+threadDumpNodes(){
+	echo "ThreadDump JBoss nodes on $HOSTNAME: "
+	for node in $NODES; do
+		if isRunning $node; then
+			$SUDO kill -3 $JBOSS_PID
+			echo -e "\t- $node: done"
+		else
+			echo -e "\t- $node: NOT running!"
+		fi
+	done
+}
+
+heapDumpNodes(){
+	echo "HeapDump JBoss nodes on $HOSTNAME: "
+	for node in $NODES; do
+		if isRunning $node; then
+			DATE=$(date +"_%T")
+			NODE_NUM=$(echo $node | cut -d '_' -f2-)
+			HEAP_FILE=$HEAPDUMP_DIR/heapdump_$NODE_NUM$DATE.bin
+			$SUDO $JMAP_HOME/jmap -dump:format=b,file=$HEAP_FILE $JBOSS_PID
+			$SUDO chmod -R 777 $HEAPDUMP_DIR
+			$SUDO gzip -q $NOMBRE_FICHERO.bin
+			echo -e "\t- $node: done ($HEAP_FILE)"
+		else
+			echo -e "\t- $node: NOT running!"
+		fi
+	done
+}
+
+enableNodes(){
+	echo "Enabling JBoss nodes on $HOSTNAME: "
+	for node in $NODES; do
+		$SUDO rm -f "$JBOSS_DIR/$node/.maintenance"
+		echo -e "\t- $node: done"
+	done
+}
+
+disableNodes(){
+	echo "Disabling JBoss nodes on $HOSTNAME: "
+	for node in $NODES; do
+		$SUDO touch "$JBOSS_DIR/$node/.maintenance"
+		echo -e "\t- $node: done"
+	done
+}
+
+isNode(){ # checks if arg is a node
+        node_app=$1
+        if [[ $node_app =~ phoenix_* ]]; then
+                return 0
+        else
+                return 1
+        fi
+}
+
+### MAIN
+
+ARG_NO=$#
+
+if [ $1 = "dialog" ]; then
+	isDialog="yes"
+	shift
+fi
+
+if isNode $2; then
+	ACTION=$1
+	shift
+	NODES=$*
+elif [ "$1" = "status" -o "$1" = "info" ]; then
+	ACTION=$1
+	shift
+	NODES=$*
+else
+	APP=$1
+	shift
+	ACTION=$1
+	shift
+	NODES=$*
+fi
+
+
+NODES_NO=$(echo $NODES | wc -w)
+
+if [ "$ARG_NO" -lt 2 -a "$ACTION" != "status" ]; then
+	usage
+	exit 0
+fi
+
+checkUser
+checkNodes
+
+case "$ACTION" in
+	start)		startNodes ;;
+	stop)		stopNodes ;;
+	info|status)	statusNodes ;;
+	kill)		killNodes ;;
+	enable)		enableNodes ;;
+	disable)	disableNodes ;;
+	threaddump)	threadDumpNodes ;;
+	heapdump)	heapDumpNodes ;;
+	waitfornode)	waitForNode ;;
+	*)		usage ;;
+esac
