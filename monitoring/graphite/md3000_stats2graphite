@@ -186,12 +186,7 @@ function getMD3000Stats(){
   tmp=$(mktemp -p /dev/shm .getMD3000Stats.XXXX)
   if [[ $DEVEL == "true" ]]; then
     if [[ $target == "lun" ]]; then
-      mockOutput lun > "$tmp"
-      if [[ $(grep -c "^Virtual Disk DataStore_.*${name}," "$tmp") != 1 ]]; then
-        grep "^Virtual Disk DataStore_.*${name}" "$tmp"
-      else
-        grep "^Virtual Disk DataStore_.*${name}," "$tmp"
-      fi
+      mockOutput lun | grep "^Virtual Disk DataStore_"
     elif [[ $target == "disk" ]]; then
       mockOutput disk | grep "Expansion Enclosure"
     elif [[ $target == "disk_status" ]]; then
@@ -200,12 +195,7 @@ function getMD3000Stats(){
   elif [[ $target == "disk" ]]; then
     $CMD 'show allphysicaldisks performancestats;' | tr -d '"' | grep "Expansion Enclosure"
   elif [[ $target == "lun" ]]; then
-    $CMD 'show allvirtualdisks performancestats;' | tr -d '"' > "$tmp"
-    if [[ $(grep -c "^Virtual Disk DataStore_.*${name}," "$tmp") != 1 ]]; then
-      grep "^Virtual Disk DataStore_.*${name}" "$tmp"
-    else
-      grep "^Virtual Disk DataStore_.*${name}," "$tmp"
-    fi
+    $CMD 'show allvirtualdisks performancestats;' | tr -d '"' | grep "^Virtual Disk DataStore_"
   elif [[ $target == "disk_status" ]]; then
     ## Get physical disks status
     $CMD 'show allphysicaldisks summary;' | tr -s ' ' | grep "Physical Disk SAS"
@@ -224,7 +214,6 @@ function getStats(){
 }
 
 function getLunStats(){
-  local perfdata all_disks_mb_sec all_disks_avg_latency num_disks io_lat mb_sec
   while IFS=$'\n," ' read null1 null2 disk \
                           total_io \
                           read_pct \
@@ -243,15 +232,17 @@ function getLunStats(){
                           rest; do
     disk_name=$(echo "$disk" | cut -d ' ' -f3-)
     if [[ $mode = "speed" ]]; then
+      #echo "${GRAPHITE_PREFIX}.$disk_name.speed $curr_mb_sec $(date +%s)" >> $LOG
       echo "${GRAPHITE_PREFIX}.$disk_name.speed $curr_mb_sec $(date +%s)" | nc "$GRAPHITE_HOST" "$GRAPHITE_PORT"
     elif [[ $mode = "latency" ]]; then
+      #echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)" >> $LOG
       echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)" | nc "$GRAPHITE_HOST" "$GRAPHITE_PORT"
     fi
   done< <(getMD3000Stats "$target")
 }
 
 function getDiskStats(){
-  local perfdata curr_io_lat
+  local curr_io_lat
   while IFS=$'\n," ' read null1 null2 enclosure \
                           null3 drawer \
                           null4 slot \
@@ -260,6 +251,7 @@ function getDiskStats(){
     #echo DEBUG: $null1 $null2 $enclosure $null3 $drawer $null4 $slot
     #exit
     disk_name="disk_${enclosure}_${drawer}_${slot}"
+    #echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)" >> $LOG
     echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)" | nc "$GRAPHITE_HOST" "$GRAPHITE_PORT"
   done< <(getMD3000Stats "disk")
 }
@@ -280,6 +272,7 @@ CMD_PATH="/opt/dell/mdstoragesoftware/mdstoragemanager/client"
 GRAPHITE_HOST="10.120.0.30"
 GRAPHITE_PORT="2003"
 GRAPHITE_PREFIX="vmware_acero_stratio_com"
+LOG="/tmp/log"
 
 # Global variables
 declare target
@@ -322,6 +315,6 @@ if [ ! -e "$lock" ]; then
   while true; do
     # Get MD3000 stats
     getStats "$target"
-    #echo "[$$] target: $target, mode: $mode => inserted at $(date)" >> /tmp/log
+    #echo "[$$] target: $target, mode: ${mode:-"latency"} => inserted at $(date)" >> $LOG
   done
 fi
