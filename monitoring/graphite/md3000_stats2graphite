@@ -188,7 +188,6 @@ function getMD3000Stats(){
     if [[ $target == "lun" ]]; then
       mockOutput lun > "$tmp"
       if [[ $(grep -c "^Virtual Disk DataStore_.*${name}," "$tmp") != 1 ]]; then
-        rm -f "$name_found"
         grep "^Virtual Disk DataStore_.*${name}" "$tmp"
       else
         grep "^Virtual Disk DataStore_.*${name}," "$tmp"
@@ -203,7 +202,6 @@ function getMD3000Stats(){
   elif [[ $target == "lun" ]]; then
     $CMD 'show allvirtualdisks performancestats;' | tr -d '"' > "$tmp"
     if [[ $(grep -c "^Virtual Disk DataStore_.*${name}," "$tmp") != 1 ]]; then
-      rm -f "$name_found"
       grep "^Virtual Disk DataStore_.*${name}" "$tmp"
     else
       grep "^Virtual Disk DataStore_.*${name}," "$tmp"
@@ -245,10 +243,8 @@ function getLunStats(){
                           rest; do
     disk_name=$(echo "$disk" | cut -d ' ' -f3-)
     if [[ $mode = "speed" ]]; then
-      echo "${GRAPHITE_PREFIX}.$disk_name.speed $curr_mb_sec $(date +%s)"
       echo "${GRAPHITE_PREFIX}.$disk_name.speed $curr_mb_sec $(date +%s)" | nc "$GRAPHITE_HOST" "$GRAPHITE_PORT"
     elif [[ $mode = "latency" ]]; then
-      echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)"
       echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)" | nc "$GRAPHITE_HOST" "$GRAPHITE_PORT"
     fi
   done< <(getMD3000Stats "$target")
@@ -264,11 +260,17 @@ function getDiskStats(){
     #echo DEBUG: $null1 $null2 $enclosure $null3 $drawer $null4 $slot
     #exit
     disk_name="disk_${enclosure}_${drawer}_${slot}"
-    echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)"
     echo "${GRAPHITE_PREFIX}.$disk_name.latency $curr_io_lat $(date +%s)" | nc "$GRAPHITE_HOST" "$GRAPHITE_PORT"
   done< <(getMD3000Stats "disk")
 }
 
+# Remove global temp files upon exit
+function cleanup(){
+  if [[ $unlocked ]]; then
+    rm -f "$lock"
+  fi
+}
+trap cleanup 0 # cleanup before exiting
 ############################################################### </FUNCTIONS> #################################################################
 
 
@@ -283,27 +285,43 @@ GRAPHITE_PREFIX="vmware_acero_stratio_com"
 declare target
 declare mode
 declare ctrlr
+declare lock
+declare unlocked
 
-function main(){
-  while getopts "t:m:s:h" opt; do
-    case $opt in
-        t)   target=$OPTARG ;;         ### GLOBAL VARIABLES ###
-        m)   mode=$OPTARG ;;           ### GLOBAL VARIABLES ###
-        s)   ctrlr+="$OPTARG ";;       ### GLOBAL VARIABLES ###
-        h|*) usage ; exit 1; ;;
-    esac
+# Process arguments
+while getopts "t:m:s:h" opt; do
+  case $opt in
+      t)   target=$OPTARG ;;         ### GLOBAL VARIABLES ###
+      m)   mode=$OPTARG ;;           ### GLOBAL VARIABLES ###
+      s)   ctrlr+="$OPTARG ";;       ### GLOBAL VARIABLES ###
+      h|*) usage ; exit 1; ;;
+  esac
+done
+
+# Define CLI command with controllers IP/DNS
+CMD="$CMD_PATH/SMcli $ctrlr -S -c"
+
+# Verify all needed parameters
+if [[ -z $ctrlr ]] || \
+   [[ $target != "disk" ]] && [[ $target != "lun" ]] || \
+   [[ $target == "lun" ]] && [[ $mode != "speed" ]] && [[ $mode != "latency" ]]; then
+  usage
+  exit 10
+fi
+
+# Define lockfile
+if [[ $target == "disk" ]]; then
+  lock=/dev/shm/md3000_stats2graphite_disk.lock
+else
+  lock=/dev/shm/md3000_stats2graphite_lun_${mode}.lock
+fi
+
+if [ ! -e "$lock" ]; then
+  touch "$lock"
+  unlocked=true
+  while true; do
+    # Get MD3000 stats
+    getStats "$target"
+    #echo "[$$] target: $target, mode: $mode => inserted at $(date)" >> /tmp/log
   done
-
-  CMD="$CMD_PATH/SMcli $ctrlr -S -c"
-  # Verify all needed parameters
-  if [[ -z $ctrlr ]] || \
-     [[ $target != "disk" ]] && [[ $target != "lun" ]] || \
-     [[ $target == "lun" ]] && [[ $mode != "speed" ]] && [[ $mode != "latency" ]]; then
-    usage
-    exit 10
-  fi
-
-  getStats "$target"
-}
-
-main "$@"
+fi
