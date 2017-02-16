@@ -1,0 +1,100 @@
+#!/bin/bash
+
+############################################################### <FUNCTIONS> #################################################################
+# Usage
+function usage(){
+  cat << EOU
+Usage: $0 -u <user> -p <passwords>
+       $0 -c <conffile> -a <id_in_conffile>
+
+conffile syntax:
+<github_username1>=<password1>
+<github_username2>=<password2>
+[...]
+<github_usernameN>=<passwordN>
+
+EOU
+}
+
+function getStats(){
+  if [[ ! $user ]] || [[ ! $password ]]; then
+    echo "\$user or \$password variables are empty!"
+    exit 10
+  fi
+
+  # define lockfile filename
+  lock="/dev/shm/$(basename "$0")_$user"
+
+  # If not locked we can start
+  if [ ! -e "$lock" ]; then
+    touch "$lock"
+    unlocked=true
+    while true; do
+      # Get API requests stats
+      message="${GRAPHITE_PREFIX}.$user.remaining_requests "
+      message+="$(curl --silent -u "$user:$password" "$GITHUB_API_URL" | jq "$JQ_QUERY") "
+      message+=$(date +%s)
+      echo "$message" | nc "$GRAPHITE_HOST" "$GRAPHITE_PORT"
+      sleep 10
+      #echo "[$$] target: $target, mode: ${mode:-"latency"} => inserted at $(date)" >> $LOG
+    done
+  fi
+}
+
+# Remove global temp files upon exit
+function cleanup(){
+  if [[ $unlocked ]]; then
+    rm -f "$lock"
+  fi
+}
+trap cleanup 0 # cleanup before exiting
+############################################################### </FUNCTIONS> #################################################################
+
+# Script config
+#DEVEL=true
+GRAPHITE_HOST="10.120.0.30"
+GRAPHITE_PORT="2003"
+GRAPHITE_PREFIX="github_api"
+GITHUB_API_URL="https://api.github.com/rate_limit"
+JQ_QUERY=".resources.core.remaining"
+LOG="/tmp/log"
+
+# Global variables
+declare lock
+declare user
+declare password
+declare conffile
+declare account
+declare unlocked
+
+# Process arguments
+while getopts "u:p:c:a:h" opt; do
+  case $opt in
+    u) user=$OPTARG ;;
+    p) password=$OPTARG ;;
+    c) conffile=$OPTARG ;;
+    a) account=$OPTARG ;;
+    h|*) usage ; exit 10 ;;
+  esac
+done
+
+# Verify all needed parameters
+if [[ $conffile ]] && ( [[ $user ]] || [[ $password ]] ) || \
+   [[ ! $conffile ]] && ( [[ ! $user ]] || [[ ! $password ]] ) || \
+   [[ $conffile ]] && [[ ! $account ]]; then
+  usage
+  exit 10
+fi
+
+if [[ $conffile ]] ; then
+  if grep -q "^$account=" "$conffile"; then
+    while IFS=$'\n=' read user password ; do
+      getStats
+    done< <(grep "$account=" "$conffile")
+  else
+    echo "Account '$account' not specified in config: $conffile"
+    exit 10
+  fi
+else
+  getStats
+fi
