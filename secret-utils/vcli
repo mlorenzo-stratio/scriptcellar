@@ -82,7 +82,7 @@ function get_next_cmd(){
 # Usage
 function help(){
     cat <<EOH
-Usage: $0 -v <vault_host> -p <vault_port> -t <vault_token>
+Usage: $0 -v <vault_host> -p <vault_port> -t <vault_token> [-i]
 EOH
 }
 
@@ -139,19 +139,19 @@ function _curl(){
     local method="${3:-GET}"
     if [[ $data ]]; then
         if [[ "$VERBOSE" = "yes" ]]; then
-            echo -e "url: https://$vault_host:$vault_port/v1/$endpoint\nmethod: $method\ndata:$data"
+            echo -e "url: $protocol://$vault_host:$vault_port/v1/$endpoint\nmethod: $method\ndata:$data"
         fi
         _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
                       -H 'Content-type: application/json' \
                       -d \"$data\" \
-                      \"https://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
+                      \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
     else
         if [[ "$VERBOSE" = "yes" ]]; then
-            echo -e "url: https://$vault_host:$vault_port/v1/$endpoint\nmethod: $method"
+            echo -e "url: $protocol://$vault_host:$vault_port/v1/$endpoint\nmethod: $method"
         fi
         _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
                       -H 'Content-type: application/json' \
-                      \"https://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
+                      \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
     fi
 }
 
@@ -288,11 +288,13 @@ function _put(){
 # main function
 function main(){
     local command tmpmsg
-    while getopts "v:p:t:h" opt; do
+    protocol="https"
+    while getopts "v:p:t:hi" opt; do
         case $opt in
             v) vault_host=$OPTARG ;;       ### GLOBAL VARIABLES ###
             p) vault_port=$OPTARG ;;       ### GLOBAL VARIABLES ###
             t) vault_token=$OPTARG ;;      ### GLOBAL VARIABLES ###
+            i) protocol="http";;
             h|*) help ; exit 1; ;;
         esac
     done
@@ -330,9 +332,9 @@ function main(){
         # read key and process
         read -sN1 key
         case $key in
-            $'\x1b') # CURSORS & SPECIAL CHARS
+            $'\x1b')
                 read -rsn1 -t 0.001 key # flush read
-                if [[ $key == "[" ]]; then
+                if [[ $key == "[" ]]; then # CURSORS & SPECIAL CHARS
                     read -rsn1 -t 0.001 key # flush read again
                     case $key in
                         $'\x41') # up cursor: older history
@@ -345,26 +347,30 @@ function main(){
                             if [[ $pos -lt $((len+1)) ]]; then # if anything was typed allow to move cursor left
                                 tput cuf 1 # move cursor right
                                 let pos+=1 # increment cursor position
-                                debug "pos: $pos right"
+                                [[ $DEBUG == "yes" ]] && echo "pos: $pos right" >> $DEBUGFILE
                             fi
                         ;;
                         $'\x44') # left cursor
                             if [[ $pos -gt 1 ]]; then # if anything was typed and position>0 allow to move cursor left
                                 tput cub 1 # move cursor left
                                 let pos-=1 # decrement cursor position
-                                debug "pos: $pos left"
+                                [[ $DEBUG == "yes" ]] && echo "pos: $pos left" >> $DEBUGFILE
                             fi
                         ;;
                     esac
+                elif [[ $key == "O" ]]; then # HOME & END KEYS
+                    read -rsn1 -t 0.001 key # flush read again
+                    case $key in
+                        $'\x46') # END
+                                tput cuf $((len-pos+1)) # move cursor right to the end
+                                let pos=len+1
+                        ;;
+                        $'\x48') # HOME
+                                tput cub $((pos-1)) # move cursor left to the beginning
+                                let pos=1
+                        ;;
+                    esac
                 fi
-            ;;
-            $'\x46') # END
-                tput cuf $((len-pos+1)) # move cursor right to the end
-                let pos=len+1
-            ;;
-            $'\x48') # HOME
-                tput cub $((pos-1)) # move cursor left to the beginning
-                let pos=1
             ;;
             $'\x0a') # ENTER
                 if [[ $cmd ]] && [[ ! "$cmd" =~ ^[[:space:]]+$ ]]; then

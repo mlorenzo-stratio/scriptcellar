@@ -83,9 +83,9 @@ while true; do
     # read key and process
     read -sN1 key
     case $key in
-        $'\x1b') # CURSORS & SPECIAL CHARS
+        $'\x1b') 
             read -rsn1 -t 0.001 key # flush read
-            if [[ $key == "[" ]]; then
+            if [[ $key == "[" ]]; then # CURSORS & SPECIAL CHARS
                 read -rsn1 -t 0.001 key # flush read again
                 case $key in
                     $'\x41') # up cursor: older history
@@ -109,15 +109,19 @@ while true; do
                         fi
                     ;;
                 esac
+            elif [[ $key == "O" ]]; then # HOME & END KEYS
+                read -rsn1 -t 0.001 key # flush read again
+                case $key in	
+                    $'\x46') # END
+		            tput cuf $((len-pos+1)) # move cursor right to the end
+		            let pos=len+1
+		    ;;
+		    $'\x48') # HOME
+		            tput cub $((pos-1)) # move cursor left to the beginning
+		            let pos=1
+		    ;;
+                esac
             fi
-        ;;
-        $'\x46') # END
-            tput cuf $((len-pos+1)) # move cursor right to the end
-            let pos=len+1
-        ;;
-        $'\x48') # HOME
-            tput cub $((pos-1)) # move cursor left to the beginning
-            let pos=1
         ;;
         $'\x0a') # ENTER
             if [[ $cmd ]] && [[ ! "$cmd" =~ ^[[:space:]]+$ ]]; then
