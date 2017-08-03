@@ -3,10 +3,19 @@
 # GLOBAL VARIABLES
 declare is_command cmd cmd_history restcmd key prompt len pos history_index
 declare -a cmd_history
-declare DEBUG="no"
+declare DEBUG="yes"
 declare DEBUGFILE
+declare ENDHIST
+declare ADDTMPCMD
+declare VCLISTORY="$HOME/.vcliteststory"
 DEBUGFILE="/tmp/debug"
 
+function debug(){
+    local msg="$*"
+    if [[ $DEBUG == "yes" ]]; then
+        echo -e "$msg" >> $DEBUGFILE
+    fi
+}
 # Print prompt
 function prompt(){
     tput bold
@@ -18,6 +27,7 @@ function prompt(){
 # add $cmd to command history @cmd_history
 function add_cmd(){
     local cmd="$*"
+    if [[ ! $cmd ]]; then return 1; fi
     local -a new_history
     new_history=( "$cmd" )
     for old_cmd in "${cmd_history[@]}"; do
@@ -26,19 +36,19 @@ function add_cmd(){
         fi
     done
     cmd_history=( "${new_history[@]}" )
-    local n=0
-    for cmd in "${cmd_history[@]}"; do
-        [[ $DEBUG == "yes" ]] && echo "cmd_history[$n]: $cmd" >> $DEBUGFILE
-        let n+=1
-    done
+    debug "add_cmd cmd_history[0]: $cmd"
 }
 
 
 # UP: returns previous cmd in history
 function get_prev_cmd(){
+    if [[ ! $ADDTMPCMD ]]; then
+        add_cmd "$cmd"
+        ADDTMPCMD="yes"
+    fi
     if [[ $history_index -lt $((${#cmd_history[@]}-1)) ]]; then
         cmd="${cmd_history[$((++history_index))]}"
-        [[ $DEBUG == "yes" ]] && echo "cmd_history[$((history_index))]: $cmd" >> $DEBUGFILE
+        debug "get_prev cmd_history[$((history_index))]: $cmd"
 
         # move the cursor to the beginning to print the command selected
         [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
@@ -55,7 +65,7 @@ function get_prev_cmd(){
 function get_next_cmd(){
     if [[ $history_index -gt 0 ]]; then
         cmd="${cmd_history[$((--history_index))]}"
-        [[ $DEBUG == "yes" ]] && echo "cmd_history[$((history_index))]: $cmd" >> $DEBUGFILE
+        debug "get_next cmd_history[$((history_index))]: $cmd"
 
         # move the cursor to the beginning to print the command selected
         [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
@@ -65,7 +75,38 @@ function get_next_cmd(){
         tput el # clean to the end of the line
         let pos=$((${#cmd}+1))
         let len=${#cmd}
+    elif [[ ! $ENDHIST ]]; then
+        unset ADDTMPCMD
+        cmd=""
+        # move the cursor to the beginning to print the command selected
+        [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
+
+        tput el # clean to the end of the line
+        let pos=$((${#cmd}+1))
+        let len=${#cmd}
+        ENDHIST=yes
     fi
+}
+
+# returns last command's path
+function get_lastcmd_arg(){
+    echo "${cmd_history[$((history_index+1))]}" | cut -d' ' -f2
+}
+
+# saves history to $HOME/.vclistory
+function save_history(){
+    > "$VCLISTORY"
+    for (( idx=${#cmd_history[@]}-1 ; idx>=0 ; idx-- )) ; do
+        echo "${cmd_history[$idx]}" >> "$VCLISTORY"
+    done
+}
+
+# loads history from $HOME/.vclistory
+function load_history(){
+    [[ ! -e $VCLISTORY ]] && return
+    while read cmd; do
+        add_cmd "$cmd"
+    done < "$VCLISTORY"
 }
 
 # BEGIN
@@ -77,13 +118,19 @@ history_index=-1
 # print prompt
 prompt
 
+# load vcli history
+load_history
+
+# trap Ctrl+c
+trap "save_history && exit" INT
+
 # Begin iteration
 IFS=
 while true; do
     # read key and process
     read -sN1 key
     case $key in
-        $'\x1b') 
+        $'\x1b')
             read -rsn1 -t 0.001 key # flush read
             if [[ $key == "[" ]]; then # CURSORS & SPECIAL CHARS
                 read -rsn1 -t 0.001 key # flush read again
@@ -98,34 +145,39 @@ while true; do
                         if [[ $pos -lt $((len+1)) ]]; then # if anything was typed allow to move cursor left
                             tput cuf 1 # move cursor right
                             let pos+=1 # increment cursor position
-                            [[ $DEBUG == "yes" ]] && echo "pos: $pos right" >> $DEBUGFILE
+                            debug "pos: $pos right"
                         fi
                     ;;
                     $'\x44') # left cursor
                         if [[ $pos -gt 1 ]]; then # if anything was typed and position>0 allow to move cursor left
                             tput cub 1 # move cursor left
                             let pos-=1 # decrement cursor position
-                            [[ $DEBUG == "yes" ]] && echo "pos: $pos left" >> $DEBUGFILE
+                            debug "pos: $pos left"
                         fi
                     ;;
                 esac
             elif [[ $key == "O" ]]; then # HOME & END KEYS
                 read -rsn1 -t 0.001 key # flush read again
-                case $key in	
+                case $key in
                     $'\x46') # END
-		            tput cuf $((len-pos+1)) # move cursor right to the end
-		            let pos=len+1
-		    ;;
-		    $'\x48') # HOME
-		            tput cub $((pos-1)) # move cursor left to the beginning
-		            let pos=1
-		    ;;
+                            [[ $len != 0 ]] && tput cuf $((len-pos+1)) # move cursor right to the end
+                            let pos=len+1
+                    ;;
+                    $'\x48') # HOME
+                            [[ $len != 0 ]] && tput cub $((pos-1)) # move cursor left to the beginning
+                            let pos=1
+                    ;;
                 esac
             fi
+            unset ENDHIST
         ;;
         $'\x0a') # ENTER
+            unset ENDHIST
             if [[ $cmd ]] && [[ ! "$cmd" =~ ^[[:space:]]+$ ]]; then
                 cmd=$(echo "$cmd" | sed -e "s/^[[:space:]]\+\(.*\)/\1/g" -e "s/[[:space:]]\+$//g" | tr -s ' ')
+                if [[ $(echo $cmd | cut -d' ' -f2) == "!$" ]]; then
+                    cmd="$(echo $cmd | cut -d' ' -f1) $(get_lastcmd_arg)"
+                fi
                 echo -e "\nRun command: \"$cmd\"" ; is_command="true"
                 add_cmd "$cmd"
                 history_index=-1
@@ -136,11 +188,12 @@ while true; do
             fi
         ;;
         $'\x7f') # BACKSPACE
+            unset ENDHIST
             if [[ $len != 0 ]] && [[ $pos -gt 1 ]]; then # if anything was typed and position>0 allow to delete
                 echo -en "\b \b"
                 let len-=1
                 let pos-=1
-                [[ $DEBUG == "yes" ]] && echo -n "${#cmd}: \"$cmd\"" >> $DEBUGFILE
+                tmpmsg="${#cmd}: \"$cmd\""
                 # remove $key in $((pos-1))
                 cmd="${cmd:0:$((pos-1))}${cmd:$((pos)):${#cmd}}"
                 tput el # clean to the end of the line
@@ -148,15 +201,16 @@ while true; do
                 echo -n "$restcmd"
                 # reposition cursor after backspace only if we moved chars
                 if [[ ${#restcmd} != 0 ]]; then tput cub ${#restcmd} ; fi
-                [[ $DEBUG == "yes" ]] && echo " => ${#cmd}: \"$cmd\"" >> $DEBUGFILE
-                [[ $DEBUG == "yes" ]] && echo "pos: $pos, len: $len" >> $DEBUGFILE
+                debug "$tmpmsg => ${#cmd}: \"$cmd\""
+                debug "pos: $pos, len: $len"
             fi
         ;;
         $'\x7e') # ERASE
+            unset ENDHIST
             if [[ $len != 0 ]] && [[ $pos -lt $((len+1)) ]]; then # if anything was typed and position>0 allow to delete
                 tput ech 1 # erase 1 character at $pos
                 let len-=1
-                [[ $DEBUG == "yes" ]] && echo -n "${#cmd}: \"$cmd\"" >> $DEBUGFILE
+                tmpmsg="${#cmd}: \"$cmd\""
                 cmd=${cmd:0:$((pos-1))}${cmd:${pos}:$((${#cmd}-1))}
                 tput el # clean to the end of the line
                 #cmd=${cmd::-1} # delete last character
@@ -164,22 +218,27 @@ while true; do
                 echo -n "$restcmd"
                 # reposition cursor after backspace only if we moved chars
                 if [[ ${#restcmd} != 0 ]]; then tput cub ${#restcmd} ; fi
-                [[ $DEBUG == "yes" ]] && echo " => ${#cmd}: \"$cmd\"" >> $DEBUGFILE
-                [[ $DEBUG == "yes" ]] && echo "pos: $pos, len: $len" >> $DEBUGFILE
+                debug "$tmpmsg => ${#cmd}: \"$cmd\""
+                debug "pos: $pos, len: $len"
             fi
+        ;;
+        $'\x12') # Ctrl+r
+            is_command=true
+            echo -e "\nSearch in history"       
         ;;
         $'\x20'|*) # NORMAL CHARS
             tput ich 1 # insert chars rather than overwriting them
             echo -n "$key" #| hexdump -C
             let len+=1
             let pos+=1
-            [[ $DEBUG == "yes" ]] && echo -n "${#cmd}: \"$cmd\"" >> $DEBUGFILE
+            tmpmsg="${#cmd}: \"$cmd\""
             # insert $key in $pos within $cmd string
             cmd="${cmd:0:$((pos-2))}$key${cmd:$((pos-2)):${#cmd}}"
-            [[ $DEBUG == "yes" ]] && echo " => ${#cmd}: \"$cmd\"" >> $DEBUGFILE
-            [[ $DEBUG == "yes" ]] && echo "pos: $pos, len: $len" >> $DEBUGFILE
-        ;;
+            debug " => ${#cmd}: \"$cmd\""
+            debug "pos: $pos, len: $len"
+        ;; 
     esac
+    debug "\nhexdump: \n $(echo -n "$key" | hexdump -C)"
     # print prompt if commadn was run
     if [[ $is_command ]]; then prompt ; unset is_command cmd pos len ; history_index=-1 ; pos=1; fi
 done
