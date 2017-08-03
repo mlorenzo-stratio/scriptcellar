@@ -37,7 +37,7 @@ function add_cmd(){
         *) return 1;;
     esac
     local -a new_history
-    new_history=( "$cmd" )
+    new_history=( "$(echo "$cmd" | sed -e "s/[[:space:]]*$//" -e "s/^[[:space:]]*//")" )
     for old_cmd in "${cmd_history[@]}"; do
         if [[ $old_cmd != $cmd ]]; then
             new_history+=( "$old_cmd" )
