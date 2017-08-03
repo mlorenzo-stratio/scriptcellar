@@ -156,10 +156,8 @@ function commands_help(){
         rm)      echo -e "rm path/to/secret \n  removes key $current_pwd/path/to/secret" ;;
         history) echo -e "history \n  shows vcli history" ;;
         exit)    echo -e "exit \n  exits vcli" ;;
-        *)       echo -e "Unknown command '$arg'"
-                cat <<EOCH
-vcli commands:
-mount    umount    cd    ls    cat    put    rm    history    exit
+        *)       cat <<EOCH
+Usage: help [mount|umount|cd|ls|cat|put|rm|history|exit]
 EOCH
         ;;
     esac
