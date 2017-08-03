@@ -145,7 +145,11 @@ EOH
 
 # Print commands help
 function commands_help(){
-    local arg="$2"
+    local arg="$1"
+    if [[ ! $arg ]]; then
+        echo -e "available commands [mount|umount|cd|ls|cat|put|rm|history|exit]"
+        return
+    fi
     case $arg in
         mount)   echo -e "mount path/to/mount \n  creates mount $current_pwd/path/to/mount" ;;
         umount)  echo -e "umount path/to/mount \n  destroys mount $current_pwd/path/to/mount" ;;
@@ -156,10 +160,7 @@ function commands_help(){
         rm)      echo -e "rm path/to/secret \n  removes key $current_pwd/path/to/secret" ;;
         history) echo -e "history \n  shows vcli history" ;;
         exit)    echo -e "exit \n  exits vcli" ;;
-        *)       cat <<EOCH
-Usage: help [mount|umount|cd|ls|cat|put|rm|history|exit]
-EOCH
-        ;;
+        *)       echo -e "unkown '$arg' vcli command\navailable commands [mount|umount|cd|ls|cat|put|rm|history|exit]" ;;
     esac
 }
 
@@ -238,7 +239,7 @@ function run_cmd(){
             history) print_history ;;
             exit)   save_history; exit ;;
             "")    ;;
-            help)  commands_help "$cmd" "$arg1" ;;
+            help)  commands_help "$arg1" ;;
             *)     commands_help "$cmd" ; return 1 ;;
         esac
         add_cmd "$cmd $arg1 $arg2"
