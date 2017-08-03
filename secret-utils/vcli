@@ -33,7 +33,7 @@ function add_cmd(){
     local cmd="$*"
     if [[ ! "$cmd" ]]; then return 1; fi
     case $cmd in
-        mount*|umount*|cd*|ls*|cat*|put*|rm*|exit*) : ;;
+        mount*|umount*|cd*|ls*|cat*|put*|rm*|exit*|help*) : ;;
         *) return 1;;
     esac
     local -a new_history
