@@ -27,7 +27,11 @@ function prompt(){
 # add $cmd to command history @cmd_history
 function add_cmd(){
     local cmd="$*"
-    if [[ ! $cmd ]]; then return 1; fi
+    if [[ ! "$cmd" ]]; then return 1; fi
+    case $cmd in
+        mount*|umount*|cd*|ls*|cat*|put*|rm*|exit*) : ;;
+        *) return 1;;
+    esac
     local -a new_history
     new_history=( "$cmd" )
     for old_cmd in "${cmd_history[@]}"; do
@@ -43,6 +47,7 @@ function add_cmd(){
 # UP: returns previous cmd in history
 function get_prev_cmd(){
     if [[ ! $ADDTMPCMD ]]; then
+        debug "get_prev add tmp_cmd: $cmd"
         add_cmd "$cmd"
         ADDTMPCMD="yes"
     fi
@@ -58,6 +63,8 @@ function get_prev_cmd(){
         tput el # clean to the end of the line
         let pos=$((${#cmd}+1))
         let len=${#cmd}
+    else
+        debug "get_next reached oldest cmd: $cmd"
     fi
 }
 
@@ -76,7 +83,9 @@ function get_next_cmd(){
         let pos=$((${#cmd}+1))
         let len=${#cmd}
     elif [[ ! $ENDHIST ]]; then
+        debug "get_next reached newest cmd: $cmd"
         unset ADDTMPCMD
+        let history_index=-1
         cmd=""
         # move the cursor to the beginning to print the command selected
         [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
@@ -122,7 +131,7 @@ prompt
 load_history
 
 # trap Ctrl+c
-trap "save_history && exit" INT
+trap "save_history && echo && exit" INT
 
 # Begin iteration
 IFS=
@@ -175,8 +184,8 @@ while true; do
             unset ENDHIST
             if [[ $cmd ]] && [[ ! "$cmd" =~ ^[[:space:]]+$ ]]; then
                 cmd=$(echo "$cmd" | sed -e "s/^[[:space:]]\+\(.*\)/\1/g" -e "s/[[:space:]]\+$//g" | tr -s ' ')
-                if [[ $(echo $cmd | cut -d' ' -f2) == "!$" ]]; then
-                    cmd="$(echo $cmd | cut -d' ' -f1) $(get_lastcmd_arg)"
+                if [[ $(echo "$cmd" | cut -d' ' -f2) == "!$" ]]; then
+                    cmd="$(echo "$cmd" | cut -d' ' -f1) $(get_lastcmd_arg)"
                 fi
                 echo -e "\nRun command: \"$cmd\"" ; is_command="true"
                 add_cmd "$cmd"
@@ -224,7 +233,7 @@ while true; do
         ;;
         $'\x12') # Ctrl+r
             is_command=true
-            echo -e "\nSearch in history"       
+            echo -e "\nSearch in history"
         ;;
         $'\x20'|*) # NORMAL CHARS
             tput ich 1 # insert chars rather than overwriting them
@@ -236,7 +245,7 @@ while true; do
             cmd="${cmd:0:$((pos-2))}$key${cmd:$((pos-2)):${#cmd}}"
             debug " => ${#cmd}: \"$cmd\""
             debug "pos: $pos, len: $len"
-        ;; 
+        ;;
     esac
     debug "\nhexdump: \n $(echo -n "$key" | hexdump -C)"
     # print prompt if commadn was run

@@ -11,6 +11,7 @@ declare timeout="2"
 declare is_command cmd cmd_history restcmd key len pos history_index
 declare -a cmd_history
 declare DEBUG="no"
+declare DEBUG_HEXDUMP="no"
 declare DEBUGFILE
 declare ENDHIST
 declare ADDTMPCMD
@@ -30,7 +31,11 @@ function debug(){
 # add $cmd to command history @cmd_history
 function add_cmd(){
     local cmd="$*"
-    if [[ ! $cmd ]]; then return 1; fi
+    if [[ ! "$cmd" ]]; then return 1; fi
+    case $cmd in
+        mount*|umount*|cd*|ls*|cat*|put*|rm*|exit*) : ;;
+        *) return 1;;
+    esac
     local -a new_history
     new_history=( "$cmd" )
     for old_cmd in "${cmd_history[@]}"; do
@@ -45,12 +50,13 @@ function add_cmd(){
 # UP: returns previous cmd in history
 function get_prev_cmd(){
     if [[ ! $ADDTMPCMD ]]; then
+        debug "get_prev add tmp_cmd: $cmd"
         add_cmd "$cmd"
         ADDTMPCMD="yes"
     fi
     if [[ $history_index -lt $((${#cmd_history[@]}-1)) ]]; then
         cmd="${cmd_history[$((++history_index))]}"
-        debug "cmd_history[$((history_index))]: $cmd"
+        debug "get_prev cmd_history[$((history_index))]: $cmd"
 
         # move the cursor to the beginning to print the command selected
         [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
@@ -60,6 +66,8 @@ function get_prev_cmd(){
         tput el # clean to the end of the line
         let pos=$((${#cmd}+1))
         let len=${#cmd}
+    else
+        debug "get_next reached oldest cmd: $cmd"
     fi
 }
 
@@ -67,7 +75,7 @@ function get_prev_cmd(){
 function get_next_cmd(){
     if [[ $history_index -gt 0 ]]; then
         cmd="${cmd_history[$((--history_index))]}"
-        debug "cmd_history[$((history_index))]: $cmd"
+        debug "get_next cmd_history[$((history_index))]: $cmd"
 
         # move the cursor to the beginning to print the command selected
         [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
@@ -78,7 +86,9 @@ function get_next_cmd(){
         let pos=$((${#cmd}+1))
         let len=${#cmd}
     elif [[ ! $ENDHIST ]]; then
+        debug "get_next reached newest cmd: $cmd"
         unset ADDTMPCMD
+        let history_index=-1
         cmd=""
         # move the cursor to the beginning to print the command selected
         [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
@@ -95,7 +105,7 @@ function get_lastcmd_arg(){
     echo "${cmd_history[$((history_index+1))]}" | cut -d' ' -f2
 }
 
-# saves# saves history to $HOME/.vclistory
+# saves history to $HOME/.vclistory
 function save_history(){
     > "$VCLISTORY"
     for (( idx=${#cmd_history[@]}-1 ; idx>=0 ; idx-- )) ; do
@@ -218,6 +228,7 @@ function run_cmd(){
             help)  commands_help "$cmd" "$arg1" ;;
             *)     commands_help "$cmd" ; return 1 ;;
         esac
+        add_cmd "$cmd $arg1 $arg2"
     done< <(echo "$cmd")
 }
 
@@ -303,7 +314,6 @@ function _ls(){
             _cat /sys/mounts
         fi
     elif [[ $url ]]; then
-        
         url="$url?list=true"
     else
         url="$current_pwd?list=true"
@@ -378,7 +388,7 @@ function main(){
     load_history
 
     # trap Ctrl+c
-    trap "save_history && exit" INT
+    trap "save_history && echo && exit" INT
 
     # Begin iteration
     IFS=
@@ -432,8 +442,8 @@ function main(){
                 if [[ $cmd ]] && [[ ! "$cmd" =~ ^[[:space:]]+$ ]]; then
                     cmd=$(echo "$cmd" | sed -e "s/^[[:space:]]\+\(.*\)/\1/g" -e "s/[[:space:]]\+$//g" | tr -s ' ')
                     echo
-                    run_cmd "$cmd" && add_cmd "$cmd"
-                    is_command="true"                    
+                    run_cmd "$cmd"
+                    is_command="true"
                     history_index=-1
                 else
                     echo
@@ -476,6 +486,10 @@ function main(){
                     debug "pos: $pos, len: $len"
                 fi
             ;;
+            #$'\x12') # Ctrl+r
+            #    is_command=true
+            #    echo -e "\nSearch in history"
+            #;;
             $'\x20'|*) # NORMAL CHARS
                 tput ich 1 # insert chars rather than overwriting them
                 echo -n "$key" #| hexdump -C
@@ -488,7 +502,7 @@ function main(){
                 debug "pos: $pos, len: $len"
             ;;
         esac
-        debug "\nhexdump: \n $(echo -n "$key" | hexdump -C)"
+        [[ $DEBUG_HEXDUMP == "yes" ]] && debug "\nhexdump: \n $(echo -n "$key" | hexdump -C)"
         # print prompt if commadn was run
         if [[ $is_command ]]; then prompt ; unset is_command cmd pos len ; history_index=-1 ; pos=1; fi
     done
