@@ -124,7 +124,7 @@ function load_history(){
 # loads history from $HOME/.vclistory
 function print_history(){
     if [[ ${#cmd_history[@]} == 0 ]]; then
-        echo -e "\nNo history found"
+        echo "No history found"
         return
     fi
     local n=1
