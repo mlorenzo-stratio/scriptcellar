@@ -33,7 +33,7 @@ function add_cmd(){
     local cmd="$*"
     if [[ ! "$cmd" ]]; then return 1; fi
     case $cmd in
-        mount*|umount*|cd*|ls*|cat*|put*|rm*|exit*|help*) : ;;
+        mount*|umount*|cd*|ls*|cat*|put*|rm*|exit*|help*|history*) : ;;
         *) return 1;;
     esac
     local -a new_history
@@ -120,6 +120,19 @@ function load_history(){
         add_cmd "$cmd"
     done < "$VCLISTORY"
 }
+
+# loads history from $HOME/.vclistory
+function print_history(){
+    if [[ ${#cmd_history[@]} == 0 ]]; then
+        echo -e "\nNo history found"
+        return
+    fi
+    local n=1
+    for (( idx=${#cmd_history[@]}-1 ; idx>=0 ; idx-- )) ; do
+        echo "#$n: ${cmd_history[$idx]}"
+        let n+=1
+    done
+}
 ################################################# CLI FUNCTIONS #################################################
 
 
@@ -134,18 +147,19 @@ EOH
 function commands_help(){
     local arg="$2"
     case $arg in
-        mount)  echo -e "mount path/to/mount \n  creates mount $current_pwd/path/to/mount" ;;
-        umount) echo -e "umount path/to/mount \n  destroys mount $current_pwd/path/to/mount" ;;
-        cd)     echo -e "cd path/to/secret \n  changes to directory $current_pwd/path/to/secret" ;;
-        ls)     echo -e "ls path/to/secret \n  lists paths and keys on $current_pwd/path/to/secret" ;;
-        cat)    echo -e "cat path/to/secret \n  shows contents of key $current_pwd/path/to/secret" ;;
-        put)    echo -e "put path/to/secret { \"key\": \"value\" } \n  adds json={ \"key\": \"value\" } to $current_pwd/path/to/secret" ;;
-        rm)     echo -e "rm path/to/secret \n  removes key $current_pwd/path/to/secret" ;;
-        exit)   echo -e "exit \n  exits vcli" ;;
-        *)      echo -e "Unknown command '$arg'"
+        mount)   echo -e "mount path/to/mount \n  creates mount $current_pwd/path/to/mount" ;;
+        umount)  echo -e "umount path/to/mount \n  destroys mount $current_pwd/path/to/mount" ;;
+        cd)      echo -e "cd path/to/secret \n  changes to directory $current_pwd/path/to/secret" ;;
+        ls)      echo -e "ls path/to/secret \n  lists paths and keys on $current_pwd/path/to/secret" ;;
+        cat)     echo -e "cat path/to/secret \n  shows contents of key $current_pwd/path/to/secret" ;;
+        put)     echo -e "put path/to/secret { \"key\": \"value\" } \n  adds json={ \"key\": \"value\" } to $current_pwd/path/to/secret" ;;
+        rm)      echo -e "rm path/to/secret \n  removes key $current_pwd/path/to/secret" ;;
+        history) echo -e "history \n  shows vcli history" ;;
+        exit)    echo -e "exit \n  exits vcli" ;;
+        *)       echo -e "Unknown command '$arg'"
                 cat <<EOCH
 vcli commands:
-mount    umount    cd    ls    cat    put    rm    exit
+mount    umount    cd    ls    cat    put    rm    history    exit
 EOCH
         ;;
     esac
@@ -223,6 +237,7 @@ function run_cmd(){
             rm)     _rm "$arg1" ;;
             mount)  _mount "$arg1" ;;
             umount) _umount "$arg1" ;;
+            history) print_history ;;
             exit)   save_history; exit ;;
             "")    ;;
             help)  commands_help "$cmd" "$arg1" ;;
