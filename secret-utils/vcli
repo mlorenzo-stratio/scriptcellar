@@ -564,7 +564,7 @@ function main(){
             $'\x12'|$'\x09') # Ctrl+r or tab behaves the same
                 if [[ ! $cmd ]]; then
                     # clean line
-                    echo -e "\nvcli hint: hit Ctrl+r when typing command to search the vcli history"
+                    echo -e "\nvcli hint: hit Ctrl+r or TAB when typing command to search the vcli history"
                     print_history
                     is_command="true"
                 else
