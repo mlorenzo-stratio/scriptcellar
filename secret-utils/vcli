@@ -19,9 +19,12 @@ declare VCLISTORY
 declare SEARCHIST
 declare search_cmd
 declare tmp_history
+declare http_code
 search_cmd=$(mktemp -p /dev/shm)
 SEARCHIST=$(mktemp -p /dev/shm)
 tmp_history=$(mktemp -p /dev/shm)
+http_code=$(mktemp -p /dev/shm)
+httpcode="none" ; declare -p httpcode > "$http_code"
 VCLISTORY="$HOME/.vclistory"
 DEBUGFILE="/tmp/debug"
 
@@ -123,9 +126,11 @@ function save_history(){
 # loads history from $HOME/.vclistory
 function load_history(){
     [[ ! -e $VCLISTORY ]] && return
+    echo -n "Loading history... "
     while read cmd; do
         add_cmd "$cmd"
     done < "$VCLISTORY"
+    echo "done"
 }
 
 # loads history from $HOME/.vclistory
@@ -135,8 +140,11 @@ function print_history(){
         return
     fi
     local n=1
+    local pad
+    pad="$(( $(echo "${#cmd_history[@]}" | wc -c) - 1 ))"
     for (( idx=${#cmd_history[@]}-1 ; idx>=0 ; idx-- )) ; do
-        echo "#$n: ${cmd_history[$idx]}"
+        npadded="$(printf %0"${pad}"d $n)"
+        echo "#$npadded: ${cmd_history[$idx]}"
         let n+=1
     done
 }
@@ -229,7 +237,8 @@ function check_arg(){
 # Print prompt
 function prompt(){
     tput bold
-    echo -n "$(basename "$0")@$vault_host:$vault_port$current_pwd> "
+    source "$http_code"
+    echo -n "[$httpcode] $(basename "$0")@$vault_host:$vault_port$current_pwd> "
     tput sgr0
 }
 
@@ -237,7 +246,7 @@ function prompt(){
 function clean_n_exit(){
     save_history
     debug "save & clean & exit"
-    rm -f "$tmp_history" "$SEARCHIST" "$search_cmd"
+    rm -f "$tmp_history" "$SEARCHIST" "$search_cmd" "$http_code"
     echo
     exit
 }
@@ -261,6 +270,12 @@ function _run(){
 function _curl(){
     local endpoint="${1#/}" # remove initial '/' if exists
     local data="$2"
+    if [[ $JQ ]] && [[ "$data" == "-_list_root_-" ]]; then
+        ROOT_QUERY="yes"
+    fi
+    local mytmp
+    mytmp="$(mktemp -p /dev/shm)"
+    local httpcode
     # POST, GET, PUT, PATCH, DELETE
     # http://www.restapitutorial.com/lessons/httpmethods.html
     local method="${3:-GET}"
@@ -268,18 +283,37 @@ function _curl(){
         if [[ "$VERBOSE" = "yes" ]]; then
             echo -e "url: $protocol://$vault_host:$vault_port/v1/$endpoint\nmethod: $method\ndata:$data"
         fi
-        _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+        _run "/usr/bin/curl -w %{http_code} -s -f -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
                       -H 'Content-type: application/json' \
                       -d \"$data\" \
-                      \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
+                      \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" > "$mytmp"
+        httpcode="$(tail -1 "$mytmp")"
+        declare -p httpcode > $http_code
+        if [[ $ROOT_QUERY ]]; then
+            head -1 "$mytmp" | jq '.data | keys'
+        else
+            head -1 "$mytmp" | jq ''
+        fi
     else
         if [[ "$VERBOSE" = "yes" ]]; then
             echo -e "url: $protocol://$vault_host:$vault_port/v1/$endpoint\nmethod: $method"
         fi
-        _run "/usr/bin/curl -s -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+        _run "/usr/bin/curl -w %{http_code} -s -f -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
                       -H 'Content-type: application/json' \
-                      \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" "$PRETTYFY"
+                      \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" > "$mytmp"
+        httpcode="$(tail -1 "$mytmp")"
+        declare -p httpcode > $http_code
+        if [[ $ROOT_QUERY ]]; then
+            head -1 "$mytmp" | "$PRETTYFY" '.data | keys'
+        else
+            head -1 "$mytmp" | "$PRETTYFY" ''
+        fi
     fi
+    if [[ ! "$httpcode" =~ ^2 ]]; then
+        return 1
+    fi
+    unset ROOT_QUERY
+    rm -f "$mytmp"
 }
 
 # run command entered in CLI
@@ -388,10 +422,11 @@ function _ls(){
     fi
     if [[ $url == '/' ]]; then
         if [[ $JQ ]]; then
-            _cat /sys/mounts | jq '.data | keys'
+            _cat /sys/mounts "-_list_root_-"
         else
             _cat /sys/mounts
         fi
+        return
     elif [[ $url ]]; then
         url="$url?list=true"
     else
@@ -403,7 +438,8 @@ function _ls(){
 # cat function
 function _cat(){
     local url="$current_pwd/$1"
-    _curl "$url"
+    local arg="$2"
+    _curl "$url" "$arg"
 }
 
 # rm function
@@ -437,6 +473,8 @@ function main(){
     done
     # Define Vault default port if not specified
     vault_port=${vault_port:-"8200"}
+    vault_host=${VAULT_HOST:-$vault_host}
+    vault_token=${VAULT_TOKEN:-$vault_token}
 
     # Check for correct arguments
     check_arg "$vault_host" "Vault host"
@@ -448,10 +486,9 @@ function main(){
     # Use jq if available
     PRETTYFY="$(which jq || true)"
     if [[ $PRETTYFY ]]; then
-        PRETTYFY=" | $PRETTYFY '' "
         JQ="true"
     else
-        PRETTYFY=" | python -m json.tool"
+        PRETTYFY="python -m json.tool"
     fi
 
     # BEGIN
@@ -460,11 +497,20 @@ function main(){
     pos=1
     history_index=-1
 
-    # print prompt
-    prompt
+    # try to get vault health status
+    if ! _ls secret > /dev/null 2>&1; then
+        echo -e "Cannot access vaul's secrets!\nCheck vault_token: '$vault_token'"
+        exit 1
+    fi
 
     # load vcli history
     load_history
+
+    # Show vault's health
+    _cat sys/health
+
+    # print prompt
+    prompt
 
     # trap Ctrl+c
     trap "clean_n_exit" INT
@@ -570,6 +616,7 @@ function main(){
                 else
                     cmd="$(rotate_found_cmds "$cmd")"
                     debug "search_cmd: $(cat "$search_cmd"), \$SEARCHIST: $(cat "$SEARCHIST")"
+
 
                     # move the cursor to the beginning to print the command selected
                     [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning

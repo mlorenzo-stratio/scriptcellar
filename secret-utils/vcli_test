@@ -129,9 +129,11 @@ function save_history(){
 # loads history from $HOME/.vclistory
 function load_history(){
     [[ ! -e $VCLISTORY ]] && return
+    echo -n "Loading history... "
     while read cmd; do
         add_cmd "$cmd"
     done < "$VCLISTORY"
+    echo "done"
 }
 
 # loads history from $HOME/.vclistory
@@ -141,8 +143,11 @@ function print_history(){
         return
     fi
     local n=1
+    local pad
+    pad="$(( $(echo "${#cmd_history[@]}" | wc -c) - 1 ))"
     for (( idx=${#cmd_history[@]}-1 ; idx>=0 ; idx-- )) ; do
-        echo "#$n: ${cmd_history[$idx]}"
+        npadded="$(printf %0"${pad}"d $n)"
+        echo "#$npadded: ${cmd_history[$idx]}"
         let n+=1
     done
 }
@@ -198,11 +203,11 @@ len=0
 pos=1
 history_index=-1
 
-# print prompt
-prompt
-
 # load vcli history
 load_history
+
+# print prompt
+prompt
 
 # trap Ctrl+c
 trap "clean_n_exit" INT
