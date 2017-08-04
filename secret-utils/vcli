@@ -246,7 +246,6 @@ function clean_n_exit(){
 function _run(){
     local exit_status
     tmp=$(mktemp -p /dev/shm -t .run.XXXX)
-    debug "_run: $(eval echo $*)"
     eval "$*" 2> "$tmp" # store stderr in $tmp
     exit_status=$?
     if [[ $VERBOSE == yes ]]; then
