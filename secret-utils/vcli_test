@@ -41,7 +41,7 @@ function clean_n_exit(){
 
 # add $cmd to command history @cmd_history
 function add_cmd(){
-    local cmd    
+    local cmd
     cmd="$(echo "$*" | sed -e "s/^[[:space:]]\+\(.*\)/\1/g" -e "s/[[:space:]]\+$//g" | tr -s ' ')"
     if [[ ! "$cmd" ]]; then return 1; fi
     case $cmd in
@@ -311,7 +311,7 @@ while true; do
                 debug "pos: $pos, len: $len"
             fi
         ;;
-        $'\x12') # Ctrl+r
+        $'\x12'|$'\x09') # Ctrl+r or tab behaves the same
             if [[ ! $cmd ]]; then
                 # clean line
                 echo -e "\nvcli hint: hit Ctrl+r when typing command to search the vcli history"
@@ -320,7 +320,6 @@ while true; do
             else
                 cmd="$(rotate_found_cmds "$cmd")"
                 debug "search_cmd: $(cat "$search_cmd"), \$SEARCHIST: $(cat "$SEARCHIST")"
-
 
                 # move the cursor to the beginning to print the command selected
                 [[ $pos != 1 ]] && tput cub $((pos-1)) # move cursor left to the beginning
@@ -332,6 +331,9 @@ while true; do
                 let pos=$((${#cmd}+1))
                 let len=${#cmd}
             fi
+        ;;
+        $'\x04') # Ctrl+d behaviour is the same as Ctrl+c
+            clean_n_exit
         ;;
         $'\x20'|*) # NORMAL CHARS
             tput ich 1 # insert chars rather than overwriting them
@@ -346,7 +348,7 @@ while true; do
         ;;
     esac
     # Exit history search mode
-    if [[ "$key" != $lastkey ]] && [[ "$key" != $'\x12' ]]; then
+        if [[ "$key" != $lastkey ]] && [[ "$key" != $'\x12' ]] && [[ "$key" != $'\x09' ]]; then
         debug "exiting history search mode"
         > "$SEARCHIST"
         > "$search_cmd"
