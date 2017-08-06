@@ -7,6 +7,17 @@ declare vault_host vault_port vault_token current_pwd
 declare -a mounted_paths
 declare timeout="2"
 
+# COLOURS
+TAB=$(tput setaf 4; tput bold)
+RED="$(tput setaf 1; tput bold)"
+GREEN="$(tput setaf 2; tput bold)"
+YELLOW="$(tput setaf 3)"
+CYAN="$(tput setaf 6; tput bold)"
+HOST="$(tput setaf 6)"
+NONE="$(tput sgr0)"
+BOLD="$(tput bold)"
+
+
 # CLI GLOBAL VARIABLES
 declare is_command cmd cmd_history restcmd key len pos history_index
 declare -a cmd_history
@@ -28,6 +39,19 @@ httpcode="none" ; declare -p httpcode > "$http_code"
 VCLISTORY="$HOME/.vclistory"
 DEBUGFILE="/tmp/debug"
 
+# Print prompt
+function prompt(){
+    source "$http_code"
+    local COLOUR=$CYAN
+    if [[ $httpcode =~ ^2 ]]; then
+        COLOUR=$GREEN
+    elif [[ $httpcode =~ ^3 ]]; then
+        COLOUR=$YELLOW
+    elif [[ $httpcode =~ ^4 ]] || [[ $httpcode =~ ^5 ]]; then
+        COLOUR=$RED
+    fi
+    echo -n "[$COLOUR$httpcode$NONE] $BOLD$(basename "$0")$TAB@$NONE$BOLD$vault_host$TAB:$NONE$BOLD$vault_port$current_pwd$TAB >$NONE "
+}
 
 function debug(){
     local msg="$*"
@@ -234,14 +258,6 @@ function check_arg(){
     fi
 }
 
-# Print prompt
-function prompt(){
-    tput bold
-    source "$http_code"
-    echo -n "[$httpcode] $(basename "$0")@$vault_host:$vault_port$current_pwd> "
-    tput sgr0
-}
-
 # save & clean & exit
 function clean_n_exit(){
     save_history
@@ -283,30 +299,36 @@ function _curl(){
         if [[ "$VERBOSE" = "yes" ]]; then
             echo -e "url: $protocol://$vault_host:$vault_port/v1/$endpoint\nmethod: $method\ndata:$data"
         fi
-        _run "/usr/bin/curl -w %{http_code} -s -f -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+        _run "/usr/bin/curl -w \"%{http_code}\n\" -s -f -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
                       -H 'Content-type: application/json' \
                       -d \"$data\" \
                       \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" > "$mytmp"
         httpcode="$(tail -1 "$mytmp")"
         declare -p httpcode > $http_code
-        if [[ $ROOT_QUERY ]]; then
-            head -1 "$mytmp" | jq '.data | keys'
-        else
-            head -1 "$mytmp" | jq ''
+        # Print output if any
+        if [[ "$(wc -l "$mytmp" | cut -d ' ' -f1)" -ge 2 ]]; then
+            if [[ $ROOT_QUERY ]]; then
+                head -1 "$mytmp" | jq '.data | keys'
+            else
+                head -1 "$mytmp" | jq ''
+            fi
         fi
     else
         if [[ "$VERBOSE" = "yes" ]]; then
             echo -e "url: $protocol://$vault_host:$vault_port/v1/$endpoint\nmethod: $method"
         fi
-        _run "/usr/bin/curl -w %{http_code} -s -f -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
+        _run "/usr/bin/curl -w \"%{http_code}\n\" -s -f -k -L -X$method -H \"X-Vault-Token:$vault_token\" \
                       -H 'Content-type: application/json' \
                       \"$protocol://$vault_host:$vault_port/v1/$endpoint\"" > "$mytmp"
         httpcode="$(tail -1 "$mytmp")"
         declare -p httpcode > $http_code
-        if [[ $ROOT_QUERY ]]; then
-            head -1 "$mytmp" | "$PRETTYFY" '.data | keys'
-        else
-            head -1 "$mytmp" | "$PRETTYFY" ''
+        # Print output if any
+        if [[ "$(wc -l "$mytmp" | cut -d ' ' -f1)" -ge 2 ]]; then
+            if [[ $ROOT_QUERY ]]; then
+                head -1 "$mytmp" | "$PRETTYFY" '.data | keys'
+            else
+                head -1 "$mytmp" | "$PRETTYFY" ''
+            fi
         fi
     fi
     if [[ ! "$httpcode" =~ ^2 ]]; then
@@ -471,8 +493,9 @@ function main(){
             h|*) help ; exit 1; ;;
         esac
     done
-    # Define Vault default port if not specified
-    vault_port=${vault_port:-"8200"}
+    # Use environment variables VAULT_HOST VAULT_TOKEN and VAULT_PORT if defined
+    vault_port=${VAULT_PORT:-"$vault_port"}
+    vault_port=${vault_port:-"8200"} # Define Vault default port if not specified
     vault_host=${VAULT_HOST:-$vault_host}
     vault_token=${VAULT_TOKEN:-$vault_token}
 
@@ -498,9 +521,12 @@ function main(){
     history_index=-1
 
     # try to get vault health status
-    if ! _ls secret > /dev/null 2>&1; then
+    _put secret/-_test_- '{ "key": "value" }'
+    if ! _cat secret/-_test_- > /dev/null 2>&1; then
         echo -e "Cannot access vaul's secrets!\nCheck vault_token: '$vault_token'"
         exit 1
+    else
+        _rm secret/-_test_-
     fi
 
     # load vcli history
