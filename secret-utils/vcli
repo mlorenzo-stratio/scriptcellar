@@ -1,19 +1,21 @@
 #!/bin/bash
 
 # DECLARE GLOBAL VARIABLES
+declare SCRIPTNAME
+SCRIPTNAME="$(basename "$0")"
 declare VERBOSE="no"
-declare PRETTYFY JQ
+declare PRETTYFY
 declare vault_host vault_port vault_token current_pwd
 declare -a mounted_paths
 declare timeout="2"
 
 # COLOURS
 TAB=$(tput setaf 4; tput bold)
+BLUE=$(tput setaf 4)
 RED="$(tput setaf 1; tput bold)"
 GREEN="$(tput setaf 2; tput bold)"
 YELLOW="$(tput setaf 3)"
 CYAN="$(tput setaf 6; tput bold)"
-HOST="$(tput setaf 6)"
 NONE="$(tput sgr0)"
 BOLD="$(tput bold)"
 
@@ -50,7 +52,7 @@ function prompt(){
     elif [[ $httpcode =~ ^4 ]] || [[ $httpcode =~ ^5 ]]; then
         COLOUR=$RED
     fi
-    echo -n "[$COLOUR$httpcode$NONE] $BOLD$(basename "$0")$TAB@$NONE$BOLD$vault_host$TAB:$NONE$BOLD$vault_port$current_pwd$TAB >$NONE "
+    echo -n "[$COLOUR$httpcode$NONE] $BOLD$SCRIPTNAME$TAB@$NONE$BOLD$vault_host$TAB:$NONE$BOLD$vault_port$current_pwd$TAB >$NONE "
 }
 
 function debug(){
@@ -67,7 +69,7 @@ function add_cmd(){
     cmd="$(echo "$*" | sed -e "s/^[[:space:]]\+\(.*\)/\1/g" -e "s/[[:space:]]\+$//g" | tr -s ' ')"
     if [[ ! "$cmd" ]]; then return 1; fi
     case $cmd in
-        mount*|umount*|cd*|ls*|cat*|put*|rm*|exit*|help*|history|enable-debug|disable-debug|enable-hexdump-debug|disable-hexdump-debug) : ;;
+        mount*|umount*|cd*|ls*|tree*|cat*|put*|rm*|exit*|help*|history|enable-debug|disable-debug|enable-hexdump-debug|disable-hexdump-debug) : ;;
         *) return 1;;
     esac
     local -a new_history
@@ -231,7 +233,7 @@ EOH
 function commands_help(){
     local arg="$1"
     if [[ ! $arg ]]; then
-        echo -e "available commands [mount|umount|cd|ls|cat|put|rm|history|exit]"
+        echo -e "available commands [mount|umount|cd|ls|tree|cat|put|rm|history|exit]"
         return
     fi
     case $arg in
@@ -239,6 +241,7 @@ function commands_help(){
         umount)  echo -e "umount path/to/mount \n  destroys mount $current_pwd/path/to/mount" ;;
         cd)      echo -e "cd path/to/secret \n  changes to directory $current_pwd/path/to/secret" ;;
         ls)      echo -e "ls path/to/secret \n  lists paths and keys on $current_pwd/path/to/secret" ;;
+        tree)    echo -e "tree path/to/secret \n  prints vault's secrets tree with $current_pwd/path/to/secret as its root" ;;
         cat)     echo -e "cat path/to/secret \n  shows contents of key $current_pwd/path/to/secret" ;;
         put)     echo -e "put path/to/secret { \"key\": \"value\" } \n  adds json={ \"key\": \"value\" } to $current_pwd/path/to/secret" ;;
         rm)      echo -e "rm path/to/secret \n  removes key $current_pwd/path/to/secret" ;;
@@ -286,7 +289,7 @@ function _run(){
 function _curl(){
     local endpoint="${1#/}" # remove initial '/' if exists
     local data="$2"
-    if [[ $JQ ]] && [[ "$data" == "-_list_root_-" ]]; then
+    if [[ "$data" == "-_list_root_-" ]]; then
         ROOT_QUERY="yes"
     fi
     local mytmp
@@ -348,6 +351,15 @@ function run_cmd(){
         case $cmd in
             cd)      _cd "$arg1" ;;
             ls)      _ls "$arg1" ;;
+            tree)
+                local tmp
+                tmp="$(mktemp -p /dev/shm)"
+                backIFS=$IFS
+                IFS=$' '
+                _tree "$arg1" > "$tmp"
+                cat "$tmp"
+                IFS=$backIFS
+                ;;
             cat)     _cat "$arg1" ;;
             put)     _put "$arg1" "$arg2" ;;
             rm)      _rm "$arg1" ;;
@@ -443,11 +455,7 @@ function _ls(){
         url="$1"
     fi
     if [[ $url == '/' ]]; then
-        if [[ $JQ ]]; then
-            _cat /sys/mounts "-_list_root_-"
-        else
-            _cat /sys/mounts
-        fi
+        _cat /sys/mounts "-_list_root_-"
         return
     elif [[ $url ]]; then
         url="$url?list=true"
@@ -455,6 +463,125 @@ function _ls(){
         url="$current_pwd?list=true"
     fi
     _curl "$url"
+}
+
+function echo_pad(){
+    local msg="$1"
+    local pad="$2"
+    local space="$3"
+    local echospace="$4"
+    # we print 2 spaces for every pad
+    for (( i=${#space} ; i<$((pad*2)) ; i++ )) ; do
+        # if is folder
+        echo -n " "
+    done
+    msg=${msg/\/\//\/}
+    msg=${msg//\//$CYAN\/$NONE}
+    space=${space//+/$CYAN+$NONE}
+    space=${space//\`/$CYAN\`$NONE}
+    debug "${echospace}msg: $msg, pad: $pad ; space: \"$space\""
+    echo "$space$msg"
+}
+
+# display the vault's secret tree
+function _tree(){
+    local url
+    local pad="$2"
+    local space="$3"
+    local echo_space="$4"
+    local last="$5"
+    local npaths=0
+    # If no "$2" was passed then this iteration is the very first one, so pad=0
+    if [[ ! $pad ]]; then
+        pad=0
+    # other wise we increment a pad as we go deeper in the structure
+    else
+        let pad++
+    fi
+    if [[ ! $1 =~ ^/ ]]; then
+        url="$current_pwd/$1"
+    else
+        url="$1"
+    fi
+    debug "${echo_space}tree: '$url', pad: $pad, space: \"$space\""
+    # if $url is /
+    echo_pad "$(basename "$url")/" "$pad" "$space" "$echo_space   "
+    #debug "_ls $url: $(_ls "$url")"
+    if [[ $url == "/" ]] || [[ ! $url ]]; then
+        paths=$(_ls "$url" | grep "\"" | sed -e "s/\"//g" -e "s/,//" | tr -t '\n' ' ' | tr -s ' ')
+    # if $url is other than root
+    else
+        paths=$(_ls "$url" | jq '.data .keys' |grep "\"" | sed -e "s/\"//g" -e "s/,//" | tr -t '\n' ' ' | tr -s ' ')
+    fi
+    local folders
+    local secrets
+    local nfolders=0
+    local nsecrets=0
+    # separate paths in folders and secrets
+    for thing in $paths; do
+        if [[ $thing =~ /$ ]]; then
+            folders+=" $thing"
+            let nfolders++
+        else
+            secrets+=" $thing"
+            let nsecrets++
+        fi
+    done
+    npaths=$((nfolders+nsecrets))
+    debug "${echo_space}   depth: $pad => found $nsecrets secrets ($secrets) and $nfolders folders ($folders)"
+    local n=1
+    for folder in $folders; do
+        folder="$url/${folder}"
+        folder=${folder/\/\//\/}
+        if [[ $n == "$nfolders" ]]; then
+            debug "${echo_space}   folder: $folder => $n out of $npaths, LAST"
+            space=${space/+/ }
+            space=${space//\`/ }
+            debug "${echo_space}   SPACE:\"$space\""
+            if [[ $n != $npaths ]]; then
+                _tree "$folder" "$pad" "$space+ " "$echo_space   " "last"
+            elif [[ ! $last ]]; then
+                _tree "$folder" "$pad" "$space\` " "$echo_space   " "last"
+            else
+                _tree "$folder" "$pad" "$space+ " "$echo_space   " "last"
+            fi
+        # middle folders in current depth
+        elif [[ $n != 1 ]] && [[ $n != $nfolders ]]; then
+            debug "${echo_space}   folder: $folder => $n out of $npaths, MIDDLE"
+            _tree "$folder" "$pad" "$space+ " "$echo_space   "
+        # first folder in current depth
+        else
+            debug "${echo_space}   folder: $folder => $n out of $npaths, FIRST"
+            space=${space/+/ }
+            space=${space/\`/ }
+            _tree "$folder" "$pad" "$space+ " "$echo_space   "
+        fi
+        let n++
+    done
+    for secret in $secrets; do
+        # last secret in current depth
+        if [[ $n == "$nsecrets" ]]; then
+            debug "${echo_space}   secret: $secret => $n out of $npaths, LAST"
+            space=${space/\`/ }
+            if [[ $n != $npaths ]]; then
+                echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
+            else
+                [[ $last ]] && space=${space// /}
+                space=${space/+/ }
+                echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
+            fi
+        # middle secret in current depth
+        elif [[ $n != 1 ]] && [[ $n != $nsecrets ]]; then
+            debug "${echo_space}   secret: $secret => $n out of $npaths ($nsecrets+$nfolders), MIDDLE"
+            echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
+        # first secret in current depth
+        else
+            debug "${echo_space}   secret: $secret => $n out of $npaths, FIRST"
+            space=${space/+/ }
+            echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
+        fi
+        let n++
+    done
 }
 
 # cat function
@@ -473,9 +600,9 @@ function _rm(){
 # put function
 function _put(){
     local url="$current_pwd/$1"
-    local data
+    local data=${2//\"/\\\"}
+    url="${url/\/\//\/}"
     debug "$data"
-    data="$(echo "$2" | sed -e "s/\"/\\\\\"/g")"
     debug "uploading '$data' to '$url'"
     _curl "$url" "$data" "POST"
 }
@@ -507,12 +634,7 @@ function main(){
     timeout $timeout bash -c "</dev/tcp/$vault_host/$vault_port" || exit 1
 
     # Use jq if available
-    PRETTYFY="$(which jq || true)"
-    if [[ $PRETTYFY ]]; then
-        JQ="true"
-    else
-        PRETTYFY="python -m json.tool"
-    fi
+    PRETTYFY="$(which jq || { echo "$SCRIPTNAME needs jq package!" ; exit 1 ; })"
 
     # BEGIN
     # initialize variables
