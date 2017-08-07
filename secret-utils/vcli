@@ -132,6 +132,7 @@ function completion(){
             cmd="$_cmd $_path${tmparray[0]}"
             debug "new_cmd2: $cmd"
         elif [[ ${#tmparray[@]} -gt 0 ]]; then
+            echo
             for p in "${tmparray[@]}"; do
                 echo "${p/\//$CYAN\/$NONE}"
             done
