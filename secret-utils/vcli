@@ -21,7 +21,7 @@ BOLD="$(tput bold)"
 # CLI GLOBAL VARIABLES
 declare is_command cmd cmd_history restcmd key len pos history_index
 declare -a cmd_history
-declare DEBUG="yes"
+declare DEBUG="no"
 declare DEBUG_HEXDUMP="no"
 declare DEBUGFILE
 declare ENDHIST
