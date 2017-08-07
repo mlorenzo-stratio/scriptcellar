@@ -166,10 +166,10 @@ function print_history(){
         return
     fi
     local n=1
-    local pad
-    pad="$(( $(echo "${#cmd_history[@]}" | wc -c) - 1 ))"
+    local depth
+    depth="$(( $(echo "${#cmd_history[@]}" | wc -c) - 1 ))"
     for (( idx=${#cmd_history[@]}-1 ; idx>=0 ; idx-- )) ; do
-        npadded="$(printf %0"${pad}"d $n)"
+        npadded="$(printf %0"${depth}"d $n)"
         echo "#$npadded: ${cmd_history[$idx]}"
         let n+=1
     done
@@ -465,13 +465,13 @@ function _ls(){
     _curl "$url"
 }
 
-function echo_pad(){
+function padecho(){
     local msg="$1"
-    local pad="$2"
+    local depth="$2"
     local space="$3"
     local echospace="$4"
-    # we print 2 spaces for every pad
-    for (( i=${#space} ; i<$((pad*2)) ; i++ )) ; do
+    # we print 2 spaces for every depth
+    for (( i=${#space} ; i<$((depth*2)) ; i++ )) ; do
         # if is folder
         echo -n " "
     done
@@ -479,108 +479,46 @@ function echo_pad(){
     msg=${msg//\//$CYAN\/$NONE}
     space=${space//+/$CYAN+$NONE}
     space=${space//\`/$CYAN\`$NONE}
-    debug "${echospace}msg: $msg, pad: $pad ; space: \"$space\""
+    debug "${echospace}msg: $msg, depth: $depth ; space: \"$space\""
     echo "$space$msg"
 }
 
 # display the vault's secret tree
 function _tree(){
     local url
-    local pad="$2"
-    local space="$3"
-    local echo_space="$4"
-    local last="$5"
-    local npaths=0
-    # If no "$2" was passed then this iteration is the very first one, so pad=0
-    if [[ ! $pad ]]; then
-        pad=0
-    # other wise we increment a pad as we go deeper in the structure
-    else
-        let pad++
-    fi
     if [[ ! $1 =~ ^/ ]]; then
         url="$current_pwd/$1"
     else
-        url="$1"
+        url="${1/\/\//\/}"
     fi
-    debug "${echo_space}tree: '$url', pad: $pad, space: \"$space\""
+    local depth="$2"
+    local space="$3"
+    local echo_space="$4"
+    # If no "$2" was passed then this iteration is the very first one, so depth=0
+    if [[ ! $depth ]]; then
+        depth=0
+    # other wise we increment a depth as we go deeper in the structure
+    else
+        let depth++
+    fi
+    debug "${echo_space}tree: '$url', depth: $depth, space: \"$space\""
     # if $url is /
-    echo_pad "$(basename "$url")/" "$pad" "$space" "$echo_space   "
-    #debug "_ls $url: $(_ls "$url")"
+    padecho "$(basename "$url")/" "$depth" "$space" "$echo_space   "
     if [[ $url == "/" ]] || [[ ! $url ]]; then
         paths=$(_ls "$url" | grep "\"" | sed -e "s/\"//g" -e "s/,//" | tr -t '\n' ' ' | tr -s ' ')
     # if $url is other than root
     else
         paths=$(_ls "$url" | jq '.data .keys' |grep "\"" | sed -e "s/\"//g" -e "s/,//" | tr -t '\n' ' ' | tr -s ' ')
     fi
-    local folders
-    local secrets
-    local nfolders=0
-    local nsecrets=0
-    # separate paths in folders and secrets
-    for thing in $paths; do
-        if [[ $thing =~ /$ ]]; then
-            folders+=" $thing"
-            let nfolders++
+
+    for path in $paths; do
+        debug "${echo_space}   depth: $depth => found: $paths"
+        space=${space/+/ }
+        if [[ $path =~ /$ ]]; then
+            _tree "$url/$path" "$depth" "$space+ " "$echo_space   "
         else
-            secrets+=" $thing"
-            let nsecrets++
+            padecho "$path" "$((depth+1))" "$space\` " "$echo_space   "
         fi
-    done
-    npaths=$((nfolders+nsecrets))
-    debug "${echo_space}   depth: $pad => found $nsecrets secrets ($secrets) and $nfolders folders ($folders)"
-    local n=1
-    for folder in $folders; do
-        folder="$url/${folder}"
-        folder=${folder/\/\//\/}
-        if [[ $n == "$nfolders" ]]; then
-            debug "${echo_space}   folder: $folder => $n out of $npaths, LAST"
-            space=${space/+/ }
-            space=${space//\`/ }
-            debug "${echo_space}   SPACE:\"$space\""
-            if [[ $n != $npaths ]]; then
-                _tree "$folder" "$pad" "$space+ " "$echo_space   " "last"
-            elif [[ ! $last ]]; then
-                _tree "$folder" "$pad" "$space\` " "$echo_space   " "last"
-            else
-                _tree "$folder" "$pad" "$space+ " "$echo_space   " "last"
-            fi
-        # middle folders in current depth
-        elif [[ $n != 1 ]] && [[ $n != $nfolders ]]; then
-            debug "${echo_space}   folder: $folder => $n out of $npaths, MIDDLE"
-            _tree "$folder" "$pad" "$space+ " "$echo_space   "
-        # first folder in current depth
-        else
-            debug "${echo_space}   folder: $folder => $n out of $npaths, FIRST"
-            space=${space/+/ }
-            space=${space/\`/ }
-            _tree "$folder" "$pad" "$space+ " "$echo_space   "
-        fi
-        let n++
-    done
-    for secret in $secrets; do
-        # last secret in current depth
-        if [[ $n == "$nsecrets" ]]; then
-            debug "${echo_space}   secret: $secret => $n out of $npaths, LAST"
-            space=${space/\`/ }
-            if [[ $n != $npaths ]]; then
-                echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
-            else
-                [[ $last ]] && space=${space// /}
-                space=${space/+/ }
-                echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
-            fi
-        # middle secret in current depth
-        elif [[ $n != 1 ]] && [[ $n != $nsecrets ]]; then
-            debug "${echo_space}   secret: $secret => $n out of $npaths ($nsecrets+$nfolders), MIDDLE"
-            echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
-        # first secret in current depth
-        else
-            debug "${echo_space}   secret: $secret => $n out of $npaths, FIRST"
-            space=${space/+/ }
-            echo_pad "$secret" "$((pad+1))" "$space\` " "$echo_space   "
-        fi
-        let n++
     done
 }
 
